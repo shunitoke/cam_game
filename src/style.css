@@ -1,0 +1,328 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05060a;
+  color: #e6e6e6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.ui {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 24px));
+}
+
+.ui::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 7;
+  background:
+    radial-gradient(1200px 800px at 50% 45%, rgba(120, 255, 230, 0.08), transparent 55%),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.035) 0px,
+      rgba(255, 255, 255, 0.035) 1px,
+      rgba(0, 0, 0, 0.0) 3px,
+      rgba(0, 0, 0, 0.0) 4px
+    );
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+.panel {
+  background: rgba(3, 6, 10, 0.72);
+  border: 1px solid rgba(120, 255, 230, 0.22);
+  border-radius: 0px;
+  padding: 12px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 0 22px rgba(0, 255, 208, 0.08);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.row + .row {
+  margin-top: 8px;
+}
+
+.row.toggles button {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 420px) {
+  .ui {
+    width: calc(100vw - 24px);
+  }
+
+  button {
+    padding: 8px 10px;
+  }
+}
+
+button {
+  appearance: none;
+  border: 1px solid rgba(120, 255, 230, 0.35);
+  background: rgba(0, 0, 0, 0.22);
+  color: #dffdf5;
+  padding: 9px 11px;
+  border-radius: 0px;
+  cursor: pointer;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 0 18px rgba(0, 255, 208, 0.10);
+}
+
+.row.controls button,
+.row.toggles button {
+  padding: 8px 10px;
+}
+
+button:hover:not(:disabled) {
+  background: rgba(0, 255, 208, 0.08);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 0 24px rgba(0, 255, 208, 0.22);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+small {
+  opacity: 0.8;
+}
+
+small span {
+  white-space: nowrap;
+}
+
+.hints {
+  margin-top: 10px;
+  border: 1px solid rgba(120, 255, 230, 0.18);
+  background: rgba(0, 0, 0, 0.18);
+  padding: 8px 10px;
+}
+
+.hints summary {
+  cursor: pointer;
+  user-select: none;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: rgba(223, 253, 245, 0.95);
+}
+
+.hintsBody {
+  margin-top: 8px;
+}
+
+.hintGrid {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 6px 10px;
+  font-size: 12px;
+  line-height: 1.25;
+  opacity: 0.9;
+}
+
+@media (max-width: 420px) {
+  .hintGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 0px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 120, 220, 0.35);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 190, 245, 0.95);
+  box-shadow: 0 0 16px rgba(255, 80, 220, 0.12);
+}
+
+.videoPreview {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  width: 240px;
+  aspect-ratio: 4 / 3;
+  border-radius: 0px;
+  overflow: hidden;
+  border: 1px solid rgba(120, 255, 230, 0.22);
+  background: rgba(0,0,0,0.25);
+  opacity: 0.14;
+  z-index: 9;
+}
+
+.videoPreview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.midiOverlay {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  width: min(560px, calc(100vw - 24px));
+  z-index: 10;
+  border: 1px solid rgba(120, 255, 230, 0.22);
+  background: rgba(3, 6, 10, 0.78);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 0 22px rgba(0, 255, 208, 0.08);
+  padding: 10px;
+  pointer-events: none;
+}
+
+.midiOverlayHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.midiOverlayTitle {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(223, 253, 245, 0.95);
+}
+
+.midiOverlaySub {
+  font-size: 11px;
+  opacity: 0.8;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.midiOverlayMap {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.midiKey {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background:
+    radial-gradient(80px 40px at 50% 20%, rgba(255, 255, 255, 0.06), transparent 60%),
+    rgba(0, 0, 0, 0.18);
+  padding: 6px 6px;
+  min-height: 34px;
+  opacity: 0.22;
+  box-shadow: 0 0 14px rgba(0, 255, 208, 0.0);
+}
+
+.midiKey::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  opacity: var(--midiFlash, 0.0);
+  background: radial-gradient(60px 30px at 50% 40%, rgba(0, 255, 208, 0.35), transparent 60%);
+  mix-blend-mode: screen;
+}
+
+.midiKeyTop {
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.midiKeyBot {
+  margin-top: 3px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.midiKey[data-role="BASS"] {
+  border-color: rgba(0, 255, 208, 0.20);
+}
+.midiKey[data-role="STAB"] {
+  border-color: rgba(255, 190, 245, 0.20);
+}
+.midiKey[data-role="LEAD"] {
+  border-color: rgba(255, 220, 120, 0.22);
+}
+.midiKey[data-role="PAD"] {
+  border-color: rgba(180, 180, 255, 0.14);
+}
+
+.midiKey.held {
+  opacity: 0.9;
+  border-color: rgba(120, 255, 230, 0.55);
+  background:
+    radial-gradient(90px 50px at 50% 20%, rgba(0, 255, 208, 0.12), transparent 60%),
+    rgba(0, 0, 0, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 0 20px rgba(0, 255, 208, 0.12);
+}
+
+.midiOverlayLegend {
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.82;
+  line-height: 1.25;
+}
+
+.midiLegendRow + .midiLegendRow {
+  margin-top: 4px;
+}
+
+@media (max-width: 520px) {
+  .midiOverlay {
+    width: calc(100vw - 24px);
+  }
+  .midiOverlayMap {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
