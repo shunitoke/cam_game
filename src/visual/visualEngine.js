@@ -255,7 +255,7 @@ export class VisualEngine {
         if (typeof s.setSafeMode === "function") {
             s.setSafeMode(this.safeMode);
         }
-        this.catAmount = Math.max(this.catAmount, 0.25);
+        this.catAmount = Math.max(this.catAmount, 0.9);
         return this.current;
     }
     update(control) {

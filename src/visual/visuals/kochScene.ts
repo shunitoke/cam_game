@@ -25,6 +25,10 @@ export class KochScene {
   private geom: any;
   private mat: any;
 
+  private pos: Float32Array;
+  private posAttr: any;
+  private posCount = 0;
+
   private t = 0;
   private burst = 0;
   private safeMode = false;
@@ -41,7 +45,11 @@ export class KochScene {
 
     this.mat = new THREE.LineBasicMaterial({ color: 0xa0ffe8, transparent: true, opacity: 0.9 });
     this.geom = new THREE.BufferGeometry();
-    this.geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+
+    this.pos = new Float32Array(0);
+    this.posAttr = new THREE.BufferAttribute(this.pos, 3);
+    this.geom.setAttribute("position", this.posAttr);
+    this.geom.setDrawRange(0, 0);
 
     this.line = new THREE.LineSegments(this.geom, this.mat);
     this.line.position.z = -0.35;
@@ -149,7 +157,15 @@ export class KochScene {
     const scale = 0.86;
 
     const totalSegs = warped.length * tx * ty;
-    const out = new Float32Array(totalSegs * 2 * 3);
+    const needed = totalSegs * 2 * 3;
+
+    if (this.pos.length < needed) {
+      // Grow buffer (avoid constant reallocations). Rebind attribute to new array.
+      this.pos = new Float32Array(needed);
+      this.posAttr.array = this.pos;
+      this.posAttr.needsUpdate = true;
+    }
+
     let wri = 0;
 
     for (let iy = 0; iy < ty; iy++) {
@@ -158,16 +174,19 @@ export class KochScene {
         const oy = (iy - (ty - 1) * 0.5) * pitchY;
         for (let i = 0; i < warped.length; i++) {
           const s0 = warped[i]!;
-          out[wri++] = (s0.ax * scale + ox);
-          out[wri++] = (s0.ay * scale + oy);
-          out[wri++] = 0;
-          out[wri++] = (s0.bx * scale + ox);
-          out[wri++] = (s0.by * scale + oy);
-          out[wri++] = 0;
+          this.pos[wri++] = (s0.ax * scale + ox);
+          this.pos[wri++] = (s0.ay * scale + oy);
+          this.pos[wri++] = 0;
+          this.pos[wri++] = (s0.bx * scale + ox);
+          this.pos[wri++] = (s0.by * scale + oy);
+          this.pos[wri++] = 0;
         }
       }
     }
-    this.geom.setAttribute("position", new THREE.BufferAttribute(out, 3));
+
+    this.posCount = wri / 3;
+    this.geom.setDrawRange(0, this.posCount);
+    this.posAttr.needsUpdate = true;
   }
 
   update(control: ControlState) {
