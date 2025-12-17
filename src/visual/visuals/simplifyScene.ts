@@ -164,8 +164,8 @@ export class SimplifyScene {
     const needed = this.simplified.length * 3;
     if (this.pos.length < needed) {
       this.pos = new Float32Array(needed);
-      this.posAttr.array = this.pos;
-      this.posAttr.needsUpdate = true;
+      this.posAttr = new THREE.BufferAttribute(this.pos, 3);
+      this.geom.setAttribute("position", this.posAttr);
     }
 
     for (let i = 0; i < this.simplified.length; i++) {
@@ -179,6 +179,7 @@ export class SimplifyScene {
     this.posCount = this.simplified.length;
     this.geom.setDrawRange(0, this.posCount);
     this.posAttr.needsUpdate = true;
+    this.geom.computeBoundingSphere();
   }
 
   update(control: ControlState) {
