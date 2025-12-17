@@ -68,8 +68,29 @@ export class AudioEngine {
   private filter = new Tone.Filter(900, "lowpass");
 
   private droneOsc = new Tone.Oscillator({ type: "sine", frequency: 220 });
-  private droneFilter = new Tone.Filter({ type: "lowpass", frequency: 1200, Q: 0.25 });
+  private droneFilter = new Tone.Filter({ type: "lowpass", frequency: 520, Q: 0.25 });
   private droneGain = new Tone.Gain(0);
+
+  private droneBassOsc = new Tone.Oscillator({ type: "sine", frequency: 55 });
+  private droneBassFilter = new Tone.Filter({ type: "lowpass", frequency: 220, Q: 0.7 });
+  private droneBassGain = new Tone.Gain(0);
+  private droneBassDryGain = new Tone.Gain(0);
+  private droneDrive = new Tone.Distortion(0.75);
+  private droneCheby = new Tone.Chebyshev({ order: 24, oversample: "2x" } as any);
+  private droneCrush = new Tone.BitCrusher(6);
+  private droneComp = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.01, release: 0.15 } as any);
+  private droneCabHP = new Tone.Filter({ type: "highpass", frequency: 70, Q: 0.7 });
+  private droneCabNotch = new Tone.Filter({ type: "peaking", frequency: 850, Q: 1.1, gain: -6 } as any);
+  private droneCabLP = new Tone.Filter({ type: "lowpass", frequency: 3600, Q: 0.7 });
+  private dronePostFilter = new Tone.Filter({ type: "lowpass", frequency: 520, Q: 0.7 });
+
+  private dronePickNoise = new Tone.Noise({ type: "pink" } as any);
+  private dronePickFilter = new Tone.Filter({ type: "bandpass", frequency: 1800, Q: 1.3 });
+  private dronePickEnv = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: 0.06, sustain: 0, release: 0.02 } as any);
+  private droneGateOn = false;
+
+  private droneCMinorNotesLow: number[] | null = null;
+  private droneCMinorNotesBass: number[] | null = null;
 
   private delay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.25, wet: 0.0 });
   private reverb = new Tone.Reverb({ decay: 3.2, preDelay: 0.01, wet: 0.0 });
@@ -349,7 +370,26 @@ export class AudioEngine {
 
     this.droneOsc.connect(this.droneFilter);
     this.droneFilter.connect(this.droneGain);
-    this.droneGain.connect(this.reverb);
+    this.droneGain.connect(this.droneDrive);
+    this.droneDrive.connect(this.droneCheby);
+    this.droneCheby.connect(this.droneCrush);
+    this.droneCrush.connect(this.droneComp);
+    this.droneComp.connect(this.droneCabHP);
+    this.droneCabHP.connect(this.droneCabNotch);
+    this.droneCabNotch.connect(this.droneCabLP);
+    this.droneCabLP.connect(this.dronePostFilter);
+    this.dronePostFilter.connect(this.reverb);
+
+    this.dronePickNoise.connect(this.dronePickFilter);
+    this.dronePickFilter.connect(this.dronePickEnv);
+    this.dronePickEnv.connect(this.droneDrive);
+
+    this.droneBassOsc.connect(this.droneBassFilter);
+    this.droneBassFilter.connect(this.droneBassGain);
+    this.droneBassGain.connect(this.reverb);
+    this.droneBassGain.connect(this.droneBassDryGain);
+    this.droneBassDryGain.connect(this.master);
+    this.droneBassDryGain.connect(this.waveBass);
 
     this.applyCustomWaveforms();
 
@@ -603,6 +643,16 @@ export class AudioEngine {
 
     try {
       this.droneOsc.start();
+    } catch {
+    }
+
+    try {
+      this.droneBassOsc.start();
+    } catch {
+    }
+
+    try {
+      this.dronePickNoise.start();
     } catch {
     }
 
@@ -933,26 +983,55 @@ export class AudioEngine {
       this.droneGain.gain.rampTo(0, 0.03);
     } catch {
     }
+
+    try {
+      this.droneBassGain.gain.rampTo(0, 0.03);
+    } catch {
+    }
+
+    try {
+      this.droneBassDryGain.gain.rampTo(0, 0.03);
+    } catch {
+    }
+
+    this.droneGateOn = false;
   }
 
   private getDroneCMinorNotes() {
     if (this.droneCMinorNotes) return this.droneCMinorNotes;
     const notes: number[] = [];
-    const base = 36;
-    const max = 84;
+    const base = 12;
+    const max = 60;
     const scale = [0, 2, 3, 5, 7, 8, 10];
     for (let o = 0; o <= 6; o++) {
       const root = base + o * 12;
-      for (let i = 0; i < scale.length; i++) {
-        const n = root + scale[i]!;
-        if (n < base) continue;
-        if (n > max) continue;
-        notes.push(n);
+      for (const st of scale) {
+        const n = root + st;
+        if (n >= base && n <= max) notes.push(n);
       }
     }
     if (!notes.length) notes.push(base);
     this.droneCMinorNotes = notes;
     return notes;
+  }
+
+  private getDroneCMinorNotesInRange(minMidi: number, maxMidi: number, cache: "low" | "bass") {
+    if (cache === "low" && this.droneCMinorNotesLow) return this.droneCMinorNotesLow;
+    if (cache === "bass" && this.droneCMinorNotesBass) return this.droneCMinorNotesBass;
+
+    const all = this.getDroneCMinorNotes();
+    const notes = all.filter((n) => n >= minMidi && n <= maxMidi);
+    if (!notes.length) notes.push(Math.max(minMidi, Math.min(maxMidi, all[0] ?? minMidi)));
+    if (cache === "low") this.droneCMinorNotesLow = notes;
+    else this.droneCMinorNotesBass = notes;
+    return notes;
+  }
+
+  private quantizeCMinorInRange(x01: number, minMidi: number, maxMidi: number, cache: "low" | "bass") {
+    const x = clamp01(x01);
+    const notes = this.getDroneCMinorNotesInRange(minMidi, maxMidi, cache);
+    const idx = Math.min(notes.length - 1, Math.max(0, Math.round(x * (notes.length - 1))));
+    return notes[idx]!;
   }
 
   private quantizeCMinor(x01: number) {
@@ -995,34 +1074,89 @@ export class AudioEngine {
       const right = hands.find((h) => h.label === "Right") ?? null;
       const left = hands.find((h) => h.label === "Left") ?? null;
 
-      const pinch = clamp01(right?.pinch ?? control.rightPinch);
-      const on = pinch > 0.12;
+      const rPinch = clamp01(right?.pinch ?? control.rightPinch);
+      const lPinch = clamp01(left?.pinch ?? control.leftPinch);
+      const guitarOn = rPinch > 0.12;
+      const bassOn = lPinch > 0.12;
       const now = Tone.now();
 
       // Timbre/brightness (0=darker, 1=brighter)
       const ry = clamp01(right?.center?.y ?? control.rightY);
       const bright = clamp01(1 - ry);
-      this.droneFilter.frequency.rampTo(lerp(220, 5200, bright), 0.08);
+      this.droneFilter.frequency.rampTo(lerp(90, 900, bright), 0.10);
 
-      // Pitch from rightX (plus small influence from leftY).
+      this.droneDrive.distortion = lerp(0.75, 0.99, rPinch);
+      try {
+        this.droneCheby.set({ order: Math.round(lerp(18, 42, rPinch)) } as any);
+      } catch {
+      }
+      try {
+        this.droneCrush.set({ bits: Math.round(lerp(7, 3, rPinch)) } as any);
+      } catch {
+      }
+      this.droneCabNotch.frequency.rampTo(lerp(650, 1050, bright), 0.12);
+      try {
+        (this.droneCabNotch.gain as any).value = lerp(-10, -4, bright);
+      } catch {
+      }
+      this.droneCabLP.frequency.rampTo(lerp(2400, 5200, bright), 0.14);
+      this.dronePostFilter.frequency.rampTo(lerp(70, 1400, bright), 0.12);
+      this.dronePostFilter.Q.value = lerp(0.55, 1.25, bright);
+
+      if (guitarOn && !this.droneGateOn) {
+        this.droneGateOn = true;
+        try {
+          this.dronePickFilter.frequency.rampTo(lerp(1200, 2600, bright), 0.01);
+          this.dronePickEnv.triggerAttackRelease(0.05, now, lerp(0.10, 0.35, rPinch));
+        } catch {
+        }
+      }
+      if (!guitarOn) this.droneGateOn = false;
+
+      // Pitch: very narrow low ranges.
       const rx = clamp01(right?.center?.x ?? control.rightX);
-      const ly = clamp01(left?.center?.y ?? control.leftY);
-      const midi = this.quantizeCMinor(clamp01(rx * 0.92 + (1 - ly) * 0.08));
-      const freq = Tone.Frequency(midi, "midi").toFrequency();
-      const vel = clamp01(0.02 + pinch * 0.55);
-      const glide = lerp(0.05, 0.11, clamp01(1 - pinch));
+      const lx = clamp01(left?.center?.x ?? control.leftX);
+
+      // Right hand: "guitar" layer (still low, but above the sub bass).
+      const guitarMidi = this.quantizeCMinorInRange(rx, 26, 38, "low");
+      const guitarFreq = Tone.Frequency(guitarMidi, "midi").toFrequency();
+
+      // Left hand: sub bass layer (narrow ultra-low).
+      const bassMidi = this.quantizeCMinorInRange(lx, 12, 26, "bass");
+      const bassFreq = Tone.Frequency(bassMidi, "midi").toFrequency();
+
+      const glide = lerp(0.06, 0.14, clamp01(1 - Math.max(rPinch, lPinch)));
 
       try {
-        this.droneOsc.frequency.rampTo(freq, glide);
+        this.droneOsc.frequency.rampTo(guitarFreq, glide);
+      } catch {
+      }
+      try {
+        this.droneBassOsc.frequency.rampTo(bassFreq, glide);
       } catch {
       }
 
+      // Gain: right pinch is the main gate, left pinch adds/subs the bass layer.
+      const guitarVel = clamp01(0.02 + rPinch * 0.55);
+      const bassVel = clamp01(0.01 + lPinch * 0.70);
+
       try {
-        this.droneGain.gain.rampTo(on ? vel : 0, 0.03);
+        this.droneGain.gain.rampTo(guitarOn ? guitarVel : 0, 0.03);
+      } catch {
+      }
+      try {
+        this.droneBassGain.gain.rampTo(bassOn ? bassVel : 0, 0.05);
+      } catch {
+      }
+      try {
+        this.droneBassDryGain.gain.rampTo(bassOn ? bassVel * 0.75 : 0, 0.05);
       } catch {
       }
 
-      const targetMaster = control.kill ? 0.0001 : 0.85;
+      // Bass tone: keep it mostly dark; open slightly with right-hand brightness.
+      this.droneBassFilter.frequency.rampTo(lerp(90, 380, bright), 0.12);
+
+      const targetMaster = control.kill ? 0.0001 : 0.65;
       this.master.gain.rampTo(targetMaster, 0.06);
 
       // Short-circuit: in DRONE mode we only drive the dedicated oscillator.

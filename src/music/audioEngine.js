@@ -41,6 +41,8 @@ export class AudioEngine {
     gestureOn = false;
     gestureNote = null;
     gestureVoice = null;
+    gestureMidi = null;
+    gestureLastPolyT = 0;
     raveLeadEnabled = false;
     droneCMinorNotes = null;
     midiSamplesLoadStarted = false;
@@ -50,6 +52,14 @@ export class AudioEngine {
     limiter = new Tone.Limiter(-0.5);
     drive = new Tone.Distortion(0.1);
     filter = new Tone.Filter(900, "lowpass");
+    droneOsc = new Tone.Oscillator({ type: "sine", frequency: 220 });
+    droneFilter = new Tone.Filter({ type: "lowpass", frequency: 520, Q: 0.25 });
+    droneGain = new Tone.Gain(0);
+    droneDrive = new Tone.Distortion(0.75);
+    droneCheby = new Tone.Chebyshev({ order: 24, oversample: "2x" });
+    droneCrush = new Tone.BitCrusher(6);
+    droneComp = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.01, release: 0.15 });
+    dronePostFilter = new Tone.Filter({ type: "lowpass", frequency: 520, Q: 0.7 });
     delay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.25, wet: 0.0 });
     reverb = new Tone.Reverb({ decay: 3.2, preDelay: 0.01, wet: 0.0 });
     kickPre = new Tone.Filter({ type: "lowpass", frequency: 180, Q: 0.7 });
@@ -262,6 +272,14 @@ export class AudioEngine {
         this.filter.connect(this.delay);
         this.delay.connect(this.reverb);
         this.reverb.connect(this.master);
+        this.droneOsc.connect(this.droneFilter);
+        this.droneFilter.connect(this.droneGain);
+        this.droneGain.connect(this.droneDrive);
+        this.droneDrive.connect(this.droneCheby);
+        this.droneCheby.connect(this.droneCrush);
+        this.droneCrush.connect(this.droneComp);
+        this.droneComp.connect(this.dronePostFilter);
+        this.dronePostFilter.connect(this.reverb);
         this.applyCustomWaveforms();
         Tone.Transport.bpm.value = cfg.bpm;
         Tone.Transport.timeSignature = [4, 4];
@@ -500,6 +518,11 @@ export class AudioEngine {
         await this.loadMidiSamples();
         await Tone.loaded();
         await this.reverb.ready;
+        try {
+            this.droneOsc.start();
+        }
+        catch {
+        }
         if (this.mode === "performance") {
             Tone.Transport.start();
             this.introT = 0;
@@ -521,6 +544,11 @@ export class AudioEngine {
             return;
         Tone.Transport.stop();
         this.releaseGesture(Tone.now());
+        try {
+            this.droneGain.gain.rampTo(0, 0.03);
+        }
+        catch {
+        }
         this.started = false;
     }
     handleMidi(events) {
@@ -809,23 +837,27 @@ export class AudioEngine {
         }
         this.gestureNote = null;
         this.gestureVoice = null;
+        this.gestureMidi = null;
+        // Also kill the dedicated DRONE oscillator gate.
+        try {
+            this.droneGain.gain.rampTo(0, 0.03);
+        }
+        catch {
+        }
     }
     getDroneCMinorNotes() {
         if (this.droneCMinorNotes)
             return this.droneCMinorNotes;
         const notes = [];
-        const base = 36;
-        const max = 84;
+        const base = 12;
+        const max = 60;
         const scale = [0, 2, 3, 5, 7, 8, 10];
         for (let o = 0; o <= 6; o++) {
             const root = base + o * 12;
-            for (let i = 0; i < scale.length; i++) {
-                const n = root + scale[i];
-                if (n < base)
-                    continue;
-                if (n > max)
-                    continue;
-                notes.push(n);
+            for (const st of scale) {
+                const n = root + st;
+                if (n >= base && n <= max)
+                    notes.push(n);
             }
         }
         if (!notes.length)
@@ -869,75 +901,36 @@ export class AudioEngine {
             const pinch = clamp01(right?.pinch ?? control.rightPinch);
             const on = pinch > 0.12;
             const now = Tone.now();
+            // Timbre/brightness (0=darker, 1=brighter)
+            const ry = clamp01(right?.center?.y ?? control.rightY);
+            const bright = clamp01(1 - ry);
+            this.droneFilter.frequency.rampTo(lerp(90, 900, bright), 0.10);
+            this.droneDrive.distortion = lerp(0.75, 0.99, pinch);
+            this.droneCheby.order = Math.round(lerp(18, 42, pinch));
+            this.droneCrush.bits = Math.round(lerp(7, 3, pinch));
+            this.dronePostFilter.frequency.rampTo(lerp(70, 1400, bright), 0.12);
+            this.dronePostFilter.Q.value = lerp(0.55, 1.25, bright);
             // Pitch from rightX (plus small influence from leftY).
             const rx = clamp01(right?.center?.x ?? control.rightX);
             const ly = clamp01(left?.center?.y ?? control.leftY);
             const midi = this.quantizeCMinor(clamp01(rx * 0.92 + (1 - ly) * 0.08));
-            const note = Tone.Frequency(midi, "midi").toNote();
-            // Which synth are we showcasing?
-            const voice = this.selectedVoice === 3
-                ? "stab"
-                : this.selectedVoice === 4
-                    ? "simpleLead"
-                    : this.selectedVoice === 5
-                        ? "simpleLead"
-                        : this.selectedVoice === 6
-                            ? "pad"
-                            : "bass";
-            // Velocity from pinch; keep it controlled.
-            const vel = clamp01(0.08 + pinch * 0.55);
-            // If voice changed while held, release previous voice cleanly.
-            if (this.gestureOn && this.gestureVoice && this.gestureVoice !== voice) {
-                this.releaseGesture(now);
+            const freq = Tone.Frequency(midi, "midi").toFrequency();
+            const vel = clamp01(0.02 + pinch * 0.55);
+            const glide = lerp(0.05, 0.11, clamp01(1 - pinch));
+            try {
+                this.droneOsc.frequency.rampTo(freq, glide);
             }
-            if (on) {
-                if (!this.gestureOn) {
-                    this.gestureOn = true;
-                    this.gestureVoice = voice;
-                    this.gestureNote = note;
-                    try {
-                        if (voice === "bass")
-                            this.bass.triggerAttack(note, now, vel);
-                        else if (voice === "simpleLead")
-                            this.simpleLead.triggerAttack(note, now, vel);
-                        else if (voice === "stab")
-                            this.stab.triggerAttack(note, now, vel);
-                        else
-                            this.pad.triggerAttack(note, now, vel * 0.35);
-                    }
-                    catch {
-                    }
-                }
-                // Smooth pitch update while held.
-                try {
-                    if (voice === "bass")
-                        this.bass.frequency.rampTo(note, 0.05);
-                    else if (voice === "simpleLead")
-                        this.simpleLead.frequency.rampTo(note, 0.06);
-                    else {
-                        // PolySynth: re-trigger when note changes.
-                        if (this.gestureNote !== note) {
-                            const prev = this.gestureNote;
-                            this.gestureNote = note;
-                            if (prev) {
-                                if (voice === "stab")
-                                    this.stab.triggerRelease(prev, now);
-                                else
-                                    this.pad.triggerRelease(prev, now);
-                            }
-                            if (voice === "stab")
-                                this.stab.triggerAttack(note, now, vel);
-                            else
-                                this.pad.triggerAttack(note, now, vel * 0.35);
-                        }
-                    }
-                }
-                catch {
-                }
+            catch {
             }
-            else {
-                this.releaseGesture(now);
+            try {
+                this.droneGain.gain.rampTo(on ? vel : 0, 0.03);
             }
+            catch {
+            }
+            const targetMaster = control.kill ? 0.0001 : 0.65;
+            this.master.gain.rampTo(targetMaster, 0.06);
+            // Short-circuit: in DRONE mode we only drive the dedicated oscillator.
+            return;
         }
         const cutoff = expRange01(control.rightX, 120, 5200);
         const q = lerp(0.7, 14.0, clamp01(control.rightY));
@@ -1010,7 +1003,7 @@ export class AudioEngine {
         this.lead.volume.value = lerp(-22, -14, clamp01(control.build));
         this.simpleLead.volume.value = lerp(-26, -16, clamp01(build));
         this.pad.volume.value = lerp(-30, -18, clamp01(build));
-        const targetMaster = control.kill ? 0.0001 : this.mode === "drone" ? 0.85 : 0.9;
+        const targetMaster = control.kill ? 0.0001 : 0.9;
         this.master.gain.rampTo(targetMaster, 0.06);
     }
     getWaveforms() {

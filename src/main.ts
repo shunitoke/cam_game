@@ -619,14 +619,41 @@ async function main() {
     requestAnimationFrame(tick);
   };
 
+  const errMsg = (e: unknown) => {
+    if (e instanceof Error) return e.message;
+    try {
+      return String(e);
+    } catch {
+      return "unknown error";
+    }
+  };
+
   const start = async () => {
     startBtn.disabled = true;
+    startBtn.textContent = "Entering...";
+    camSpan.title = "";
+    audSpan.title = "";
+    midiSpan.title = "";
+
     camSpan.textContent = "starting";
+    try {
+      await tracker.start(video);
+      camSpan.textContent = "on";
+    } catch (e) {
+      camSpan.textContent = "error";
+      camSpan.title = `Camera error: ${errMsg(e)}`;
+      startBtn.disabled = false;
+      startBtn.textContent = "Enter Performance";
+      return;
+    }
 
-    await tracker.start(video);
-    camSpan.textContent = "on";
+    try {
+      await midi.start();
+    } catch (e) {
+      midiSpan.textContent = "err";
+      midiSpan.title = `MIDI error: ${errMsg(e)}`;
+    }
 
-    await midi.start();
     const ms = midi.getStatus();
     if (!ms.supported) {
       midiSpan.textContent = "off";
@@ -643,13 +670,28 @@ async function main() {
     }
 
     audSpan.textContent = "starting";
-    if (!audio) {
-      const mod = await import("./music/audioEngine");
-      audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+    try {
+      if (!audio) {
+        const mod = await import("./music/audioEngine");
+        audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+      }
+      audio.setMode(audioMode);
+
+      try {
+        await audio.start();
+      } catch (e) {
+        await new Promise((r) => setTimeout(r, 250));
+        await audio.start();
+      }
+
+      audSpan.textContent = "on";
+    } catch (e) {
+      audSpan.textContent = "error";
+      audSpan.title = `Audio error: ${errMsg(e)}`;
+      startBtn.disabled = false;
+      startBtn.textContent = "Enter Performance";
+      return;
     }
-    audio.setMode(audioMode);
-    await audio.start();
-    audSpan.textContent = "on";
 
     running = true;
     stopBtn.disabled = false;
@@ -657,6 +699,7 @@ async function main() {
     nextBtn.disabled = false;
     safeBtn.disabled = false;
     overlayBtn.disabled = false;
+    startBtn.textContent = "Enter Performance";
     lastT = performance.now();
     requestAnimationFrame(tick);
   };
@@ -672,6 +715,8 @@ async function main() {
     tracker.stop();
     midi.stop();
     audSpan.textContent = "off";
+    camSpan.textContent = "off";
+    midiSpan.textContent = "off";
     startBtn.disabled = false;
   };
 
@@ -679,8 +724,15 @@ async function main() {
     void start().catch((e) => {
       console.error(e);
       startBtn.disabled = false;
-      camSpan.textContent = "error";
-      audSpan.textContent = "error";
+      startBtn.textContent = "Enter Performance";
+      if (camSpan.textContent === "starting") {
+        camSpan.textContent = "error";
+        camSpan.title = `Camera error: ${errMsg(e)}`;
+      }
+      if (audSpan.textContent === "starting") {
+        audSpan.textContent = "error";
+        audSpan.title = `Audio error: ${errMsg(e)}`;
+      }
     });
   });
 
