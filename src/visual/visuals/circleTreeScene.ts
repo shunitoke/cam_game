@@ -37,6 +37,17 @@ export class CircleTreeScene {
   private maxNodes = 1600;
   private nodes: Node[] = [];
 
+  private poolSize = 140;
+  private bubCount = 0;
+  private bx: Float32Array;
+  private by: Float32Array;
+  private bvx: Float32Array;
+  private bvy: Float32Array;
+  private br0: Float32Array;
+  private br: Float32Array;
+  private bPhase: Float32Array;
+  private prevBp = 0;
+
   private baseW = 4.2;
   private baseH = 2.4;
 
@@ -146,12 +157,21 @@ export class CircleTreeScene {
     this.mesh.position.z = -0.4;
     this.scene.add(this.mesh);
 
+    this.bx = new Float32Array(256);
+    this.by = new Float32Array(256);
+    this.bvx = new Float32Array(256);
+    this.bvy = new Float32Array(256);
+    this.br0 = new Float32Array(256);
+    this.br = new Float32Array(256);
+    this.bPhase = new Float32Array(256);
+
     this.reset();
   }
 
   setSafeMode(on: boolean) {
     this.safeMode = on;
     this.maxNodes = on ? 900 : 1600;
+    this.poolSize = on ? 96 : 140;
     this.reset();
   }
 
@@ -176,6 +196,7 @@ export class CircleTreeScene {
   reset() {
     this.t = 0;
     this.burst = 0;
+    this.prevBp = 0;
 
     // Start with a root circle.
     this.nodes = [{ x: 0, y: 0, r: 0.55, depth: 0, parent: -1 }];
@@ -225,8 +246,30 @@ export class CircleTreeScene {
     }
 
     this.mat.uniforms.uNodes.value = u;
-    this.mat.uniforms.uCount.value = nCount;
+    this.bubCount = Math.min(this.poolSize, nCount);
+    this.mat.uniforms.uCount.value = this.bubCount;
     this.mat.uniforms.uSeed.value = Math.random();
+
+    for (let i = 0; i < this.bubCount; i++) {
+      const n = this.nodes[i]!;
+      this.bx[i] = n.x;
+      this.by[i] = n.y;
+      this.bvx[i] = 0;
+      this.bvy[i] = 0;
+      this.br0[i] = n.r;
+      this.br[i] = n.r;
+      this.bPhase[i] = n.depth + i * 0.17;
+    }
+
+    for (let i = this.bubCount; i < 256; i++) {
+      this.bx[i] = 0;
+      this.by[i] = 0;
+      this.bvx[i] = 0;
+      this.bvy[i] = 0;
+      this.br0[i] = 0;
+      this.br[i] = 0;
+      this.bPhase[i] = 0;
+    }
   }
 
   update(control: ControlState) {
@@ -264,6 +307,10 @@ export class CircleTreeScene {
     // - leftPinch : regenerate
     const k = clamp01(kickEnv + this.burst);
 
+    const bp = clamp01(control.beatPulse ?? 0);
+    const beatEdge = bp > 0.55 && this.prevBp <= 0.55;
+    this.prevBp = bp;
+
     if (control.leftPinch > 0.92 && Math.random() < 0.06) {
       this.reset();
     }
@@ -275,17 +322,162 @@ export class CircleTreeScene {
     this.mat.uniforms.uWet.value = wet;
     this.mat.uniforms.uBuild.value = build;
 
-    // animate node radii slightly (audio wobble)
-    const limit = 256;
     const arr: any[] = this.mat.uniforms.uNodes.value as any;
-    const nCount = Math.min(limit, (this.mat.uniforms.uCount.value as number) | 0);
-    const wob = (0.004 + 0.016 * wet) * (0.35 + 0.65 * k);
+    const dt = Math.min(0.033, control.dt);
+    const damp = this.safeMode ? 0.94 : 0.92;
+    const drive = (0.0012 + 0.0035 * wet) * (0.35 + 0.65 * k);
 
-    for (let i = 0; i < nCount; i++) {
+    if (beatEdge) {
+      if (Math.random() < 0.65 + 0.25 * build) {
+        const i = (Math.random() * Math.max(1, this.bubCount)) | 0;
+        this.bvx[i] += (Math.random() * 2 - 1) * (0.10 + 0.35 * energy);
+        this.bvy[i] += (Math.random() * 2 - 1) * (0.10 + 0.35 * energy);
+      }
+
+      if (build > 0.25 && this.bubCount < this.poolSize) {
+        const j = this.bubCount++;
+        const src = (Math.random() * Math.max(1, j)) | 0;
+        const sx = this.bx[src];
+        const sy = this.by[src];
+        const a = Math.random() * Math.PI * 2;
+        const rr = Math.max(0.05, Math.min(0.32, this.br0[src] * lerp(0.35, 0.60, Math.random())));
+        this.bx[j] = sx + Math.cos(a) * (this.br[src] + rr) * 0.75;
+        this.by[j] = sy + Math.sin(a) * (this.br[src] + rr) * 0.75;
+        this.bvx[j] = (Math.random() * 2 - 1) * 0.18;
+        this.bvy[j] = (Math.random() * 2 - 1) * 0.18;
+        this.br0[j] = rr;
+        this.br[j] = rr;
+        this.bPhase[j] = this.t * 0.17 + j * 0.11;
+        this.mat.uniforms.uCount.value = this.bubCount;
+      }
+
+      if (build > 0.55 && this.bubCount >= 3 && Math.random() < 0.45) {
+        let bi = 0;
+        let br = -1;
+        for (let i = 0; i < this.bubCount; i++) {
+          const r = this.br0[i];
+          if (r > br) {
+            br = r;
+            bi = i;
+          }
+        }
+        if (br > 0.12) {
+          const j = this.bubCount < this.poolSize ? this.bubCount++ : ((Math.random() * this.bubCount) | 0);
+          const a = Math.random() * Math.PI * 2;
+          const rr = br * 0.62;
+          this.br0[bi] = rr;
+          this.br0[j] = rr;
+          this.bx[j] = this.bx[bi] + Math.cos(a) * rr * 1.05;
+          this.by[j] = this.by[bi] + Math.sin(a) * rr * 1.05;
+          this.bvx[bi] += -Math.cos(a) * 0.22;
+          this.bvy[bi] += -Math.sin(a) * 0.22;
+          this.bvx[j] = Math.cos(a) * 0.22;
+          this.bvy[j] = Math.sin(a) * 0.22;
+          this.br[j] = rr;
+          this.bPhase[j] = this.t * 0.21 + j * 0.07;
+          this.mat.uniforms.uCount.value = this.bubCount;
+        }
+      }
+    }
+
+    const w = (0.004 + 0.020 * wet) * (0.35 + 0.65 * Math.max(bp, k));
+    const wobT = this.t * (0.75 + control.rightY * 1.8);
+
+    for (let i = 0; i < this.bubCount; i++) {
+      const px = this.bx[i];
+      const py = this.by[i];
+
+      const ph = this.bPhase[i] + i * 0.08;
+      const fx = Math.sin(wobT * 0.85 + ph) * drive;
+      const fy = Math.cos(wobT * 0.92 + ph * 1.13) * drive;
+
+      let vx = this.bvx[i] * damp + fx;
+      let vy = this.bvy[i] * damp + fy;
+
+      vx += (-px) * (0.0015 + 0.0045 * build) * dt;
+      vy += (-py) * (0.0015 + 0.0045 * build) * dt;
+
+      this.bx[i] = px + vx;
+      this.by[i] = py + vy;
+      this.bvx[i] = vx;
+      this.bvy[i] = vy;
+
+      const rr = this.br0[i];
+      this.br[i] = rr * (1.0 + w * Math.sin(wobT + ph));
+    }
+
+    const repel = (0.002 + 0.010 * wet) * (0.15 + 0.85 * (k + bp) * 0.5);
+    for (let i = 0; i < this.bubCount; i++) {
+      const xi = this.bx[i];
+      const yi = this.by[i];
+      const ri = this.br[i];
+      for (let j = i + 1; j < this.bubCount; j++) {
+        const dx = this.bx[j] - xi;
+        const dy = this.by[j] - yi;
+        const d2 = dx * dx + dy * dy + 1e-6;
+        const minD = (ri + this.br[j]) * (0.62 + 0.25 * build);
+        const minD2 = minD * minD;
+        if (d2 < minD2) {
+          const d = Math.sqrt(d2);
+          const push = ((minD - d) / minD) * repel;
+          const nx = dx / d;
+          const ny = dy / d;
+          this.bx[i] -= nx * push;
+          this.by[i] -= ny * push;
+          this.bx[j] += nx * push;
+          this.by[j] += ny * push;
+
+          if (!this.safeMode && build > 0.60 && beatEdge && d < (ri + this.br[j]) * 0.42 && Math.random() < 0.18) {
+            const keep = ri >= this.br[j] ? i : j;
+            const kill = keep === i ? j : i;
+            const a = Math.min(0.38, Math.max(this.br0[keep], this.br0[kill]) * 1.08);
+            this.br0[keep] = a;
+            this.br0[kill] = 0;
+            this.br[kill] = 0;
+            this.bx[kill] = (Math.random() * 2 - 1) * 1.4;
+            this.by[kill] = (Math.random() * 2 - 1) * 0.95;
+            this.bvx[kill] = (Math.random() * 2 - 1) * 0.12;
+            this.bvy[kill] = (Math.random() * 2 - 1) * 0.12;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < this.bubCount; i++) {
+      const rr = Math.max(0.0, this.br[i]);
+      const limX = 1.45;
+      const limY = 0.95;
+      let x = this.bx[i];
+      let y = this.by[i];
+      if (x < -limX) {
+        x = -limX;
+        this.bvx[i] *= -0.55;
+      }
+      if (x > limX) {
+        x = limX;
+        this.bvx[i] *= -0.55;
+      }
+      if (y < -limY) {
+        y = -limY;
+        this.bvy[i] *= -0.55;
+      }
+      if (y > limY) {
+        y = limY;
+        this.bvy[i] *= -0.55;
+      }
+      this.bx[i] = x;
+      this.by[i] = y;
+
       const v = arr[i] as any;
-      const phase = v.w * 0.55 + i * 0.08;
-      const rr = v.z * (1.0 + wob * Math.sin(this.t * (0.75 + control.rightY * 1.8) + phase));
+      v.x = x;
+      v.y = y;
       v.z = rr;
+      v.w = this.bPhase[i];
+    }
+
+    for (let i = this.bubCount; i < 256; i++) {
+      const v = arr[i] as any;
+      v.z = 0;
     }
   }
 

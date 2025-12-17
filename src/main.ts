@@ -454,6 +454,8 @@ async function main() {
   let running = false;
   let lastT = performance.now();
 
+  let beatViz = 0;
+
   canvas.addEventListener(
     "webglcontextlost",
     (e) => {
@@ -596,8 +598,44 @@ async function main() {
 
     const audioViz = audio?.getWaveforms();
     const beatPulse = audio?.getPulse?.() ?? 0;
-    if (audioViz) (control as any).audioViz = audioViz;
-    (control as any).beatPulse = beatPulse;
+    if (audioViz) {
+      (control as any).audioViz = audioViz;
+
+      const kick = (audioViz as any).kick as Float32Array | undefined;
+      let peak = 0;
+      if (kick && kick.length) {
+        const n = Math.min(256, kick.length);
+        for (let i = 0; i < n; i += 4) {
+          const v = Math.abs(kick[i] ?? 0);
+          if (v > peak) peak = v;
+        }
+      }
+
+      const fft = (audioViz as any).fft as Float32Array | undefined;
+      let low = 0;
+      if (fft && fft.length) {
+        const bins = Math.min(24, fft.length);
+        let sum = 0;
+        for (let i = 0; i < bins; i++) {
+          const db = fft[i] ?? -120;
+          const m = Math.min(1, Math.max(0, (db + 120) / 120));
+          sum += m;
+        }
+        low = bins ? sum / bins : 0;
+      }
+
+      const target = Math.min(1, Math.max(peak * 3.5, low * 1.25));
+      const dt = Math.min(0.033, (control as any).dt ?? 0.016);
+      const a = 1 - Math.exp(-dt * 26);
+      beatViz = beatViz + (target - beatViz) * a;
+      beatViz = Math.max(0, beatViz - dt * 1.75);
+    } else {
+      beatViz = Math.max(0, beatViz - (control as any).dt * 1.75);
+    }
+
+    const bpOut = Math.max(beatPulse, beatViz);
+    (control as any).beatPulse = bpOut;
+    if (running) audSpan.title = `beat: ${bpOut.toFixed(3)}`;
     const controlWithViz = control as any;
 
     const sceneDelta = controlWithViz.events.sceneDelta;
