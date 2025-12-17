@@ -17,7 +17,6 @@ import { LloydScene } from "./visuals/lloydScene";
 import { RrtScene } from "./visuals/rrtScene";
 import { RandomArboretumScene } from "./visuals/randomArboretumScene";
 import { KochScene } from "./visuals/kochScene";
-import { CircleTreeScene } from "./visuals/circleTreeScene";
 import { DlaScene } from "./visuals/dlaScene";
 
 export type SceneDef = { id: string; name: string };
@@ -243,11 +242,10 @@ export class VisualEngine {
     const rrt = new RrtScene();
     const arbor = new RandomArboretumScene();
     const koch = new KochScene();
-    const circleTree = new CircleTreeScene();
     const dla = new DlaScene();
 
     // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, circleTree, dla] as any[]) {
+    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla] as any[]) {
       if (typeof sc.setRenderer === "function") {
         sc.setRenderer(this.renderer);
       }
@@ -270,7 +268,6 @@ export class VisualEngine {
       { def: { id: "rrt", name: "RRT" }, scene: rrt },
       { def: { id: "arboretum", name: "Arboretum" }, scene: arbor },
       { def: { id: "koch", name: "Koch" }, scene: koch },
-      { def: { id: "circleTree", name: "CircleTree" }, scene: circleTree },
       { def: { id: "ascii", name: "ASCII" }, scene: ascii }
     ];
 

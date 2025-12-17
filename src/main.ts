@@ -331,15 +331,6 @@ async function main() {
         ["R", "reset"]
       ]
     },
-    circleTree: {
-      title: "CircleTree",
-      items: [
-        ["Right hand", "layout / flow"],
-        ["Build", "complexity"],
-        ["MIDI note", "burst"],
-        ["R", "reset"]
-      ]
-    },
     ascii: {
       title: "ASCII",
       items: [
