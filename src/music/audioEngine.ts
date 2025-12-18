@@ -967,6 +967,24 @@ export class AudioEngine {
 
     if (this.started) {
       if (mode === "performance") {
+        const now = Tone.now();
+        this.droneGateOn = false;
+        try {
+          this.droneGain.gain.rampTo(0, 0.03);
+        } catch {
+        }
+        try {
+          this.droneBassGain.gain.rampTo(0, 0.05);
+        } catch {
+        }
+        try {
+          this.droneBassDryGain.gain.rampTo(0, 0.05);
+        } catch {
+        }
+        try {
+          this.dronePickEnv.triggerAttackRelease(0.01, now, 0);
+        } catch {
+        }
         Tone.Transport.start();
         this.introT = 0;
         this.introOn = true;
