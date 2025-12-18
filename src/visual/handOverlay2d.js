@@ -88,10 +88,12 @@ export class HandOverlay2D {
         this.lastDrawAt = now;
         this.clear();
         for (const hand of hands) {
-            if (!hand.landmarks || hand.landmarks.length < 21)
-                continue;
             const alpha = clamp01(0.35 + hand.score * 0.65);
             const hue = hand.label === "Left" ? 195 : hand.label === "Right" ? 275 : 220;
+            if (!hand.landmarks || hand.landmarks.length < 21) {
+                this.drawSimple(hand, hue, alpha);
+                continue;
+            }
             const lineWidth = 2 + hand.pinch * 2.2;
             const glow = 0;
             this.ctx.save();
@@ -138,6 +140,33 @@ export class HandOverlay2D {
             this.ctx.fill();
             this.ctx.restore();
         }
+    }
+    drawSimple(hand, hue, alpha) {
+        const c = this.toPx(hand.center);
+        const w = this.toPx(hand.wrist);
+        const r = 10 + hand.pinch * 18;
+        const glow = 0;
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = this.lowPower ? "source-over" : "lighter";
+        this.ctx.lineCap = "round";
+        this.ctx.lineJoin = "round";
+        this.ctx.shadowBlur = glow;
+        this.ctx.shadowColor = `hsla(${hue}, 95%, 60%, ${alpha})`;
+        this.ctx.strokeStyle = `hsla(${hue}, 95%, 65%, ${alpha})`;
+        this.ctx.fillStyle = `hsla(${hue}, 95%, 70%, ${alpha})`;
+        this.ctx.lineWidth = 2.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(w.x, w.y);
+        this.ctx.lineTo(c.x, c.y);
+        this.ctx.stroke();
+        this.ctx.beginPath();
+        this.ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+        this.ctx.fill();
+        const pr = 3.5 + hand.pinch * 7;
+        this.ctx.beginPath();
+        this.ctx.arc(c.x, c.y, pr, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.restore();
     }
     toPx(p) {
         return {

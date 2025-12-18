@@ -221,10 +221,7 @@ export class VisualEngine {
         const tunnel = new RaymarchTunnelScene();
         const rd = new ReactionDiffusionScene();
         const wave = new WaveLabScene();
-        const phys = new PhysicsScene({ mode: "cloth" });
-        const physRope = new PhysicsScene({ mode: "rope" });
-        const physJelly = new PhysicsScene({ mode: "jelly" });
-        const physChainmail = new PhysicsScene({ mode: "chainmail" });
+        const phys = new PhysicsScene();
         const quasi = new QuasicrystalsScene();
         const ascii = new AsciiScene(opts?.video);
         const bif = new BifurcationScene();
@@ -237,31 +234,7 @@ export class VisualEngine {
         const kalei = new KaleidoscopeScene();
         const metaballs = new MetaballsScene();
         // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-        for (const sc of [
-            particles,
-            geo,
-            plasma,
-            warp,
-            cellular,
-            tunnel,
-            rd,
-            wave,
-            phys,
-            physRope,
-            physJelly,
-            physChainmail,
-            quasi,
-            ascii,
-            bif,
-            lloyd,
-            rrt,
-            arbor,
-            koch,
-            dla,
-            bosWarp,
-            kalei,
-            metaballs
-        ]) {
+        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
             if (typeof sc.setRenderer === "function") {
                 sc.setRenderer(this.renderer);
             }
@@ -279,9 +252,6 @@ export class VisualEngine {
             { def: { id: "bif", name: "Bifurcation" }, scene: bif },
             { def: { id: "wavelab", name: "WaveLab" }, scene: wave },
             { def: { id: "physics", name: "Physics" }, scene: phys },
-            { def: { id: "physicsRope", name: "Physics Rope" }, scene: physRope },
-            { def: { id: "physicsJelly", name: "Physics Jelly" }, scene: physJelly },
-            { def: { id: "physicsChainmail", name: "Physics Chainmail" }, scene: physChainmail },
             { def: { id: "lloyd", name: "Lloyd" }, scene: lloyd },
             { def: { id: "rrt", name: "RRT" }, scene: rrt },
             { def: { id: "arboretum", name: "Arboretum" }, scene: arbor },

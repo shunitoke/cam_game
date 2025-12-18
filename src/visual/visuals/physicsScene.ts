@@ -21,8 +21,6 @@ type Link = {
   len: number;
 };
 
-type PhysicsMode = "cloth" | "rope" | "jelly" | "chainmail";
-
 export class PhysicsScene {
   private scene = new THREE.Scene();
   private line: any;
@@ -36,15 +34,12 @@ export class PhysicsScene {
 
   private safeMode = false;
 
-  private readonly mode: PhysicsMode;
-
   private burst = 0;
 
   private grabL: number = -1;
   private grabR: number = -1;
 
-  constructor(opts?: { mode?: PhysicsMode }) {
-    this.mode = opts?.mode ?? "cloth";
+  constructor() {
     this.scene.background = new THREE.Color(0x05060a);
 
     this.mat = new THREE.LineBasicMaterial({ color: 0x66ffcc, transparent: true, opacity: 0.85 });
@@ -58,14 +53,7 @@ export class PhysicsScene {
     this.line.position.z = -0.35;
     this.scene.add(this.line);
 
-    this.rebuild();
-  }
-
-  private rebuild() {
-    if (this.mode === "rope") this.buildRope();
-    else if (this.mode === "jelly") this.buildJelly();
-    else if (this.mode === "chainmail") this.buildChainmail();
-    else this.buildGrid();
+    this.buildGrid();
   }
 
   private buildGrid() {
@@ -98,125 +86,9 @@ export class PhysicsScene {
     }
   }
 
-  private buildChainmail() {
-    this.nodes = [];
-    this.links = [];
-
-    const cols = this.safeMode ? 16 : 22;
-    const rows = this.safeMode ? 10 : 14;
-    const w = 2.4;
-    const h = 1.25;
-    const top = 0.62;
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const nx = (x / (cols - 1)) * w - w * 0.5;
-        const ny = top - (y / (rows - 1)) * h;
-        const pin = y === 0 && (x % 2 === 0);
-        this.nodes.push({ x: nx, y: ny, px: nx, py: ny, pin, pinLife: pin ? 1 : 0 });
-      }
-    }
-
-    const idx = (x: number, y: number) => y * cols + x;
-    const restX = w / (cols - 1);
-    const restY = h / (rows - 1);
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (x + 1 < cols) this.links.push({ a: idx(x, y), b: idx(x + 1, y), len: restX });
-        if (y + 1 < rows) this.links.push({ a: idx(x, y), b: idx(x, y + 1), len: restY });
-        if (x + 1 < cols && y + 1 < rows) this.links.push({ a: idx(x, y), b: idx(x + 1, y + 1), len: Math.hypot(restX, restY) });
-        if (x - 1 >= 0 && y + 1 < rows) this.links.push({ a: idx(x, y), b: idx(x - 1, y + 1), len: Math.hypot(restX, restY) });
-      }
-    }
-  }
-
-  private buildRope() {
-    this.nodes = [];
-    this.links = [];
-
-    const n = this.safeMode ? 28 : 40;
-    const x0 = -0.9;
-    const y0 = 0.55;
-    const y1 = -0.45;
-
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const nx = x0 + Math.sin(t * Math.PI * 1.35) * 0.18;
-      const ny = y0 + (y1 - y0) * t;
-      const pin = i === 0;
-      this.nodes.push({ x: nx, y: ny, px: nx, py: ny, pin, pinLife: pin ? 1 : 0 });
-    }
-
-    const rest = Math.abs(y1 - y0) / (n - 1);
-    for (let i = 0; i + 1 < n; i++) {
-      this.links.push({ a: i, b: i + 1, len: rest });
-    }
-
-    const n2 = this.safeMode ? 22 : 32;
-    const x2 = 0.9;
-    const y2 = 0.5;
-    const y3 = -0.35;
-    const base = this.nodes.length;
-    for (let i = 0; i < n2; i++) {
-      const t = i / (n2 - 1);
-      const nx = x2 + Math.cos(t * Math.PI * 1.1) * 0.16;
-      const ny = y2 + (y3 - y2) * t;
-      const pin = i === 0;
-      this.nodes.push({ x: nx, y: ny, px: nx, py: ny, pin, pinLife: pin ? 1 : 0 });
-    }
-    const rest2 = Math.abs(y3 - y2) / (n2 - 1);
-    for (let i = 0; i + 1 < n2; i++) {
-      this.links.push({ a: base + i, b: base + i + 1, len: rest2 });
-    }
-  }
-
-  private buildJelly() {
-    this.nodes = [];
-    this.links = [];
-
-    const rings = this.safeMode ? 14 : 18;
-    const center = { x: 0.0, y: 0.15 };
-    const r = 0.35;
-
-    const cIdx = 0;
-    this.nodes.push({ x: center.x, y: center.y, px: center.x, py: center.y });
-
-    for (let i = 0; i < rings; i++) {
-      const a = (i / rings) * Math.PI * 2;
-      const nx = center.x + Math.cos(a) * r;
-      const ny = center.y + Math.sin(a) * r;
-      this.nodes.push({ x: nx, y: ny, px: nx, py: ny });
-    }
-
-    const perimRest = 2 * r * Math.sin(Math.PI / rings);
-    for (let i = 0; i < rings; i++) {
-      const ia = 1 + i;
-      const ib = 1 + ((i + 1) % rings);
-      this.links.push({ a: ia, b: ib, len: perimRest });
-      this.links.push({ a: cIdx, b: ia, len: r });
-    }
-
-    const diag = 2 * r * Math.sin((2 * Math.PI) / (2 * rings));
-    for (let i = 0; i < rings; i++) {
-      const ia = 1 + i;
-      const ib = 1 + ((i + 2) % rings);
-      this.links.push({ a: ia, b: ib, len: diag });
-    }
-
-    const pegN = 10;
-    const pegY = -0.62;
-    for (let i = 0; i < pegN; i++) {
-      const t = i / (pegN - 1);
-      const nx = -1.05 + t * 2.1;
-      const ny = pegY;
-      this.nodes.push({ x: nx, y: ny, px: nx, py: ny, pin: true, pinLife: 1 });
-    }
-  }
-
   setSafeMode(on: boolean) {
     this.safeMode = on;
-    this.rebuild();
+    this.buildGrid();
   }
 
   getScene() {
@@ -224,36 +96,8 @@ export class PhysicsScene {
   }
 
   reset() {
-    this.rebuild();
+    this.buildGrid();
     this.burst = 0;
-  }
-
-  private applyBounds(dt: number) {
-    const minX = -1.3;
-    const maxX = 1.3;
-    const minY = -0.65;
-    const maxY = 0.65;
-    const bounce = this.safeMode ? 0.25 : 0.35;
-
-    for (const n of this.nodes) {
-      if (n.pin) continue;
-
-      if (n.x < minX) {
-        n.x = minX;
-        n.px = n.x + (n.x - n.px) * -bounce;
-      } else if (n.x > maxX) {
-        n.x = maxX;
-        n.px = n.x + (n.x - n.px) * -bounce;
-      }
-
-      if (n.y < minY) {
-        n.y = minY;
-        n.py = n.y + (n.y - n.py) * -bounce;
-      } else if (n.y > maxY) {
-        n.y = maxY;
-        n.py = n.y + (n.y - n.py) * -bounce;
-      }
-    }
   }
 
   triggerBurst(amount: number) {
@@ -349,8 +193,6 @@ export class PhysicsScene {
       n.y += vy + g * dt;
     }
 
-    this.applyBounds(dt);
-
     const iters = this.safeMode ? 2 : 3;
     const toTear: number[] = [];
 
@@ -368,8 +210,7 @@ export class PhysicsScene {
         const dy = b.y - a.y;
         const d = Math.hypot(dx, dy) + 1e-6;
 
-        const allowTear = this.mode === "cloth" || this.mode === "chainmail";
-        if (allowTear && !this.safeMode && tear > 0.15 && d > l.len * stretch) {
+        if (!this.safeMode && tear > 0.15 && d > l.len * stretch) {
           toTear.push(li);
           continue;
         }
@@ -394,7 +235,7 @@ export class PhysicsScene {
     }
 
     // Detach only after heavy shredding: pinned points break only when they have almost no remaining links.
-    if ((this.mode === "cloth" || this.mode === "chainmail") && !this.safeMode && tear > 0.85) {
+    if (!this.safeMode && tear > 0.85) {
       const incident = new Array(this.nodes.length).fill(0);
       for (const l of this.links) {
         incident[l.a]++;
