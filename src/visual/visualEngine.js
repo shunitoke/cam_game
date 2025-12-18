@@ -20,6 +20,7 @@ import { DlaScene } from "./visuals/dlaScene";
 import { BosWarpScene } from "./visuals/bosWarpScene";
 import { KaleidoscopeScene } from "./visuals/kaleidoscopeScene";
 import { MetaballsScene } from "./visuals/metaballsScene";
+import { SeaScene } from "./visuals/seaScene";
 export class VisualEngine {
     canvas;
     renderer;
@@ -237,8 +238,9 @@ export class VisualEngine {
         const bosWarp = new BosWarpScene();
         const kalei = new KaleidoscopeScene();
         const metaballs = new MetaballsScene();
+        const sea = new SeaScene();
         // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
+        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, sea, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
             if (typeof sc.setRenderer === "function") {
                 sc.setRenderer(this.renderer);
             }
@@ -250,6 +252,7 @@ export class VisualEngine {
             { def: { id: "warp", name: "DomainWarp" }, scene: warp },
             { def: { id: "cellular", name: "Cellular" }, scene: cellular },
             { def: { id: "tunnel", name: "Tunnel" }, scene: tunnel },
+            { def: { id: "sea", name: "Sea" }, scene: sea },
             { def: { id: "drone", name: "Drone" }, scene: drone },
             { def: { id: "quasi", name: "Quasicrystals" }, scene: quasi },
             { def: { id: "rd", name: "ReactionDiffusion" }, scene: rd },

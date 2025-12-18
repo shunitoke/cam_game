@@ -23,6 +23,9 @@ import { BosWarpScene } from "./visuals/bosWarpScene";
 import { KaleidoscopeScene } from "./visuals/kaleidoscopeScene";
 import { MetaballsScene } from "./visuals/metaballsScene";
 import { SeaScene } from "./visuals/seaScene";
+import { SineWarpBumpScene } from "./visuals/sineWarpBumpScene";
+import { CoyoteFractalFlightScene } from "./visuals/coyoteFractalFlightScene";
+import { NikosTunnelMarchScene } from "./visuals/nikosTunnelMarchScene";
 
 export type SceneDef = { id: string; name: string };
 
@@ -270,9 +273,12 @@ export class VisualEngine {
     const kalei = new KaleidoscopeScene();
     const metaballs = new MetaballsScene();
     const sea = new SeaScene();
+    const sineWarp = new SineWarpBumpScene();
+    const coyote = new CoyoteFractalFlightScene();
+    const nikos = new NikosTunnelMarchScene();
 
     // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs, sea] as any[]) {
+    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, sea, sineWarp, coyote, nikos, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs] as any[]) {
       if (typeof sc.setRenderer === "function") {
         sc.setRenderer(this.renderer);
       }
@@ -286,6 +292,9 @@ export class VisualEngine {
       { def: { id: "cellular", name: "Cellular" }, scene: cellular },
       { def: { id: "tunnel", name: "Tunnel" }, scene: tunnel },
       { def: { id: "sea", name: "Sea" }, scene: sea },
+      { def: { id: "sineWarp", name: "SineWarp" }, scene: sineWarp },
+      { def: { id: "coyote", name: "CoyoteFractal" }, scene: coyote },
+      { def: { id: "nikos", name: "NikosMarch" }, scene: nikos },
       { def: { id: "drone", name: "Drone" }, scene: drone },
       { def: { id: "quasi", name: "Quasicrystals" }, scene: quasi },
       { def: { id: "rd", name: "ReactionDiffusion" }, scene: rd },

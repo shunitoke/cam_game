@@ -83,11 +83,51 @@ export class DroneWorkletEngine {
     raveStep = 0;
     raveBpm = 138;
     raveBar = 0;
-    ravePattern = 0;
-    raveNextPatternAtBar = 0;
-    raveRng = 0;
+    raveSection = 0;
+    ravePrevSection = 0;
+    raveNextSectionBar = 0;
+    raveSectionChangeT = 0;
+    raveFillType = 0;
+    raveFillUntilBar = 0;
+    raveRand = 0x12345678;
     pulse = 0;
     fxHold = 0;
+    rand01() {
+        let x = this.raveRand | 0;
+        x ^= x << 13;
+        x ^= x >>> 17;
+        x ^= x << 5;
+        this.raveRand = x | 0;
+        return ((x >>> 0) % 1000000) / 1000000;
+    }
+    pickNextSection() {
+        const r = this.rand01();
+        const a = (this.raveSection + 1) % 3;
+        const b = (this.raveSection + 2) % 3;
+        return r < 0.55 ? a : b;
+    }
+    maybeAdvanceArrangement(bar) {
+        if (!this.ctx)
+            return;
+        if (bar < this.raveNextSectionBar)
+            return;
+        this.ravePrevSection = this.raveSection;
+        this.raveSection = this.pickNextSection();
+        this.raveSectionChangeT = this.ctx.currentTime;
+        const r = this.rand01();
+        const nextLen = r < 0.20 ? 32 : r < 0.75 ? 16 : 8;
+        this.raveNextSectionBar = bar + nextLen;
+        const fillChance = 0.12 + 0.08 * (this.raveSection === 2 ? 1 : 0);
+        if (this.raveFillUntilBar <= bar && this.rand01() < fillChance) {
+            const rr = this.rand01();
+            this.raveFillType = rr < 0.62 ? 1 : rr < 0.92 ? 2 : 3;
+            this.raveFillUntilBar = bar + 1;
+        }
+        else {
+            this.raveFillType = 0;
+            this.raveFillUntilBar = 0;
+        }
+    }
     started = false;
     mode = "performance";
     gate = 0;
@@ -369,10 +409,13 @@ export class DroneWorkletEngine {
         this.raveNextStepT = ctx.currentTime + 0.05;
         this.raveStep = 0;
         this.raveBar = 0;
-        // Seed RNG for random pattern switches.
-        this.raveRng = (Date.now() ^ ((Math.random() * 0xffffffff) >>> 0)) >>> 0;
-        this.ravePattern = this.randInt(4) ?? 0;
-        this.raveNextPatternAtBar = 8;
+        this.raveSection = 0;
+        this.ravePrevSection = 0;
+        this.raveNextSectionBar = 8;
+        this.raveSectionChangeT = ctx.currentTime;
+        this.raveFillType = 0;
+        this.raveFillUntilBar = 0;
+        this.raveRand = ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) | 0) || 0x12345678;
         const tick = () => {
             if (!this.ctx)
                 return;
@@ -392,18 +435,13 @@ export class DroneWorkletEngine {
                 this.raveNextStepT += missed * secPerStep;
             }
             while (this.raveNextStepT < now + lookahead) {
-                this.scheduleRaveStep(this.raveNextStepT, this.raveStep, secPerStep);
-                this.raveStep = (this.raveStep + 1) & 15;
                 if (this.raveStep === 0) {
-                    this.raveBar++;
-                    if (this.raveBar >= this.raveNextPatternAtBar) {
-                        const next = this.randInt(4);
-                        if (next !== this.ravePattern)
-                            this.ravePattern = next;
-                        // Switch patterns every 8 or 16 bars.
-                        this.raveNextPatternAtBar = this.raveBar + (this.randInt(2) === 0 ? 8 : 16);
-                    }
+                    this.maybeAdvanceArrangement(this.raveBar);
                 }
+                this.scheduleRaveStep(this.raveNextStepT, this.raveStep);
+                this.raveStep = (this.raveStep + 1) & 15;
+                if (this.raveStep === 0)
+                    this.raveBar++;
                 this.raveNextStepT += secPerStep;
             }
         };
@@ -478,197 +516,71 @@ export class DroneWorkletEngine {
         // Visual pulse (kick-driven)
         this.pulse = 1;
     }
-    scheduleRaveStep(time, step, secPerStep) {
+    scheduleRaveStep(time, step) {
+        // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
+        // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
         const dens = Math.min(1, Math.max(0, this.lastRightPinch));
         const bar = this.raveBar;
-        const phraseBar = bar & 15;
-        const section = phraseBar < 4 ? 0 : phraseBar < 8 ? 1 : phraseBar < 12 ? 2 : 3;
-        const inBreak = section === 3;
-        const inPeak = section === 2;
-        const baseSwing = this.ravePattern === 1 ? 0.22 : this.ravePattern === 2 ? 0.12 : this.ravePattern === 3 ? 0.18 : 0.16;
-        const swing = 0.06 + baseSwing * (0.35 + 0.65 * dens);
-        const t = (step & 1) === 1 ? time + secPerStep * swing * 0.5 : time;
-        const allowKick = !inBreak || phraseBar >= 14;
-        const allowHats = !inBreak || dens > 0.55;
-        const isFillBar = phraseBar === 15;
-        const isPreFillBar = phraseBar === 14;
-        if (this.ravePattern === 0) {
-            const kickMain = step === 0 || step === 8;
-            const kickPush = (inPeak && (step === 6 || step === 14) && dens > 0.25) || (isPreFillBar && step === 12);
-            const hatOffbeat = step === 4 || step === 12;
-            const hat16 = allowHats && (step & 1) === 1 && (section >= 1 || dens > 0.45);
-            const openHat = allowHats && (step === 12 || step === 4) && (section >= 2 || dens > 0.65);
-            const backbeat = step === 4 || step === 12;
-            const doBackbeat = section >= 1 && !inBreak;
-            const ghost = (inPeak || isFillBar) && (step === 11 || step === 3) && dens > 0.35;
-            const rimTick = allowHats && dens > 0.55 && (step === 2 || step === 10 || (inPeak && step === 14));
-            if (this.sampleKick && allowKick) {
-                if (kickMain)
-                    this.fireKick(t, 1.0);
-                if (kickPush)
-                    this.fireKick(t, 0.55);
-                if (isFillBar && step === 15)
-                    this.fireKick(t, 0.35);
-            }
-            if (this.sampleHat && allowHats) {
-                if (hatOffbeat) {
-                    const v = section === 0 ? 0.14 : section === 1 ? 0.18 : 0.20;
-                    this.fireSample(t, this.sampleHat, v, 1.02);
-                }
-                if (hat16) {
-                    const accent = step === 3 || step === 7 || step === 11 || step === 15;
-                    const base = 0.04 + 0.06 * dens;
-                    const v = accent ? base * 1.35 : base;
-                    this.fireSample(t, this.sampleHat, v, accent ? 1.10 : 1.07);
-                }
-            }
-            if (openHat && this.sampleOpenHat) {
-                const v = 0.10 + 0.16 * dens;
-                this.fireSample(t, this.sampleOpenHat, v, 1.0);
-            }
-            if (doBackbeat) {
-                if (backbeat && this.sampleSnare) {
-                    const v = inPeak ? 0.34 : 0.26;
-                    this.fireSample(t + 0.003, this.sampleSnare, v, 1.0);
-                }
-                if (backbeat && this.sampleClap) {
-                    const v = inPeak ? 0.30 : 0.22;
-                    this.fireSample(t + 0.006, this.sampleClap, v, 1.0);
-                }
-            }
-            if (ghost && this.sampleSnare) {
-                this.fireSample(t + 0.002, this.sampleSnare, 0.10 + 0.10 * dens, 1.0);
-            }
-            if (rimTick && this.sampleRim) {
-                this.fireSample(t, this.sampleRim, 0.07 + 0.08 * dens, 1.02);
-            }
-            if (allowHats && isFillBar) {
-                if ((step === 13 || step === 15) && this.sampleHat)
-                    this.fireSample(t, this.sampleHat, 0.16, 1.14);
-                if ((step === 12 || step === 15) && this.sampleRim)
-                    this.fireSample(t, this.sampleRim, 0.18, 1.0);
-            }
-            return;
+        const section = this.raveSection;
+        const fillOn = this.raveFillUntilBar > bar;
+        const kick = step === 0 || step === 4 || step === 8 || step === 12;
+        const offHat = step === 2 || step === 6 || step === 10 || step === 14;
+        const hat16 = (step & 1) === 1;
+        const openHat = step === 14;
+        // Sparse minimal punctuation
+        const rim = step === 10;
+        const snare = step === 12;
+        const fillHat = fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
+        const fillRim = fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
+        if (kick) {
+            this.fireKick(time, 1.0);
         }
-        if (this.ravePattern === 1) {
-            const kickMain = step === 0 || step === 8;
-            const kickRoll = inPeak && dens > 0.55 && (step === 5 || step === 13);
-            const hatOffbeat = step === 4 || step === 12;
-            const hat16 = allowHats && (step & 1) === 1;
-            const openHat = allowHats && (step === 12) && (section >= 1 || dens > 0.4);
-            const backbeat = step === 4 || step === 12;
-            const doBackbeat = section >= 1 && !inBreak;
-            if (this.sampleKick && allowKick) {
-                if (kickMain)
-                    this.fireKick(t, 1.0);
-                if (kickRoll)
-                    this.fireKick(t, 0.40);
-                if (isFillBar && step === 15)
-                    this.fireKick(t, 0.35);
-            }
-            if (this.sampleHat && allowHats) {
-                if (hatOffbeat)
-                    this.fireSample(t, this.sampleHat, 0.17 + 0.05 * dens, 1.02);
-                if (hat16) {
-                    const accent = step === 3 || step === 11;
-                    const v = (0.05 + 0.06 * dens) * (accent ? 1.4 : 1.0);
-                    this.fireSample(t, this.sampleHat, v, accent ? 1.10 : 1.06);
-                }
-            }
-            if (openHat && this.sampleOpenHat)
-                this.fireSample(t, this.sampleOpenHat, 0.12 + 0.14 * dens, 1.0);
-            if (doBackbeat) {
-                if (backbeat && this.sampleSnare)
-                    this.fireSample(t + 0.003, this.sampleSnare, 0.24 + 0.14 * dens, 1.0);
-                if (backbeat && this.sampleClap)
-                    this.fireSample(t + 0.006, this.sampleClap, 0.20 + 0.12 * dens, 1.0);
-            }
-            if (allowHats && isFillBar && this.sampleHat && (step === 13 || step === 15)) {
-                this.fireSample(t, this.sampleHat, 0.18, 1.16);
-            }
-            return;
+        // Occasional pre-push only at phrase end
+        if (fillOn && step === 15 && this.raveFillType === 3) {
+            this.fireKick(time, 0.22);
         }
-        if (this.ravePattern === 2) {
-            const kickMain = step === 0 || step === 8;
-            const kickBroken = (step === 3 || step === 11) && (inPeak || dens > 0.75);
-            const hatOffbeat = step === 4 || step === 12;
-            const hatSparse = allowHats && (step === 2 || step === 6 || step === 10 || step === 14) && dens > 0.35;
-            const openHat = allowHats && (step === 12) && dens > 0.55;
-            const backbeat = step === 4 || step === 12;
-            const doBackbeat = section >= 2 && !inBreak;
-            const rimTick = allowHats && dens > 0.45 && (step === 7 || step === 15);
-            if (this.sampleKick && allowKick) {
-                if (kickMain)
-                    this.fireKick(t, 1.0);
-                if (kickBroken)
-                    this.fireKick(t, 0.45);
-            }
-            if (this.sampleHat && allowHats) {
-                if (hatOffbeat)
-                    this.fireSample(t, this.sampleHat, 0.15 + 0.05 * dens, 1.02);
-                if (hatSparse)
-                    this.fireSample(t, this.sampleHat, 0.05 + 0.07 * dens, 1.08);
-            }
-            if (openHat && this.sampleOpenHat)
-                this.fireSample(t, this.sampleOpenHat, 0.10 + 0.14 * dens, 1.0);
-            if (doBackbeat) {
-                if (backbeat && this.sampleSnare)
-                    this.fireSample(t + 0.003, this.sampleSnare, 0.26 + 0.10 * dens, 1.0);
-                if (backbeat && this.sampleClap)
-                    this.fireSample(t + 0.006, this.sampleClap, 0.16 + 0.10 * dens, 1.0);
-            }
-            if (rimTick && this.sampleRim)
-                this.fireSample(t, this.sampleRim, 0.08 + 0.10 * dens, 1.02);
-            if (allowHats && isFillBar && this.sampleRim && step === 15)
-                this.fireSample(t, this.sampleRim, 0.22, 1.0);
-            return;
+        // Hats
+        if (offHat && this.sampleHat) {
+            const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
+            this.fireSample(time, this.sampleHat, v, 1.02);
         }
-        // Pattern 3
-        {
-            const kickMain = step === 0 || step === 8;
-            const kickPush = (step === 6 || step === 14) && (inPeak || dens > 0.6);
-            const hatOffbeat = step === 4 || step === 12;
-            const hat16 = allowHats && (step & 1) === 1 && dens > 0.15;
-            const openHat = allowHats && (step === 4) && (section >= 1 || dens > 0.5);
-            const backbeat = step === 4 || step === 12;
-            const doBackbeat = section >= 1 && !inBreak;
-            if (this.sampleKick && allowKick) {
-                if (kickMain)
-                    this.fireKick(t, 1.0);
-                if (kickPush)
-                    this.fireKick(t, 0.50);
+        // 16th hats come in gradually and with pinch
+        if (hat16 && this.sampleHat) {
+            const on = (section >= 1 && dens > 0.35) || (section >= 2 && dens > 0.22);
+            if (on) {
+                const v = 0.045 + 0.085 * dens;
+                const r = 1.05 + 0.03 * section;
+                this.fireSample(time, this.sampleHat, v, r);
             }
-            if (this.sampleHat && allowHats) {
-                if (hatOffbeat)
-                    this.fireSample(t, this.sampleHat, 0.18 + 0.05 * dens, 1.02);
-                if (hat16) {
-                    const v = 0.04 + 0.08 * dens;
-                    this.fireSample(t, this.sampleHat, v, 1.06);
-                }
-            }
-            if (openHat && this.sampleOpenHat)
-                this.fireSample(t, this.sampleOpenHat, 0.10 + 0.16 * dens, 1.0);
-            if (doBackbeat) {
-                if (backbeat && this.sampleSnare)
-                    this.fireSample(t + 0.003, this.sampleSnare, 0.24 + 0.16 * dens, 1.0);
-                if (backbeat && this.sampleClap)
-                    this.fireSample(t + 0.006, this.sampleClap, 0.18 + 0.14 * dens, 1.0);
-            }
-            if (allowHats && isFillBar && this.sampleHat && (step === 13 || step === 15))
-                this.fireSample(t, this.sampleHat, 0.18, 1.16);
         }
-    }
-    randU32() {
-        // xorshift32
-        let x = this.raveRng | 0;
-        x ^= x << 13;
-        x ^= x >>> 17;
-        x ^= x << 5;
-        this.raveRng = x >>> 0;
-        return this.raveRng;
-    }
-    randInt(n) {
-        return (this.randU32() % Math.max(1, n)) | 0;
+        // Open hat on the offbeat when density rises
+        if (openHat && this.sampleOpenHat) {
+            const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
+            if (section >= 2 && m > 0.06) {
+                this.fireSample(time, this.sampleOpenHat, 0.06 + 0.12 * m, 1.0);
+            }
+        }
+        // Rim/snare: keep it minimal, no clap
+        if (rim && this.sampleRim) {
+            if (section >= 1 && dens > 0.15) {
+                this.fireSample(time, this.sampleRim, 0.08 + 0.10 * dens, 1.0);
+            }
+        }
+        if (snare && this.sampleSnare) {
+            // snare comes in later (avoid pop/party clap vibe)
+            if (section >= 1) {
+                const v = (section === 1 ? 0.11 : 0.14) + 0.14 * dens;
+                this.fireSample(time + 0.004, this.sampleSnare, v, 1.0);
+            }
+        }
+        // Fills
+        if (fillHat && this.sampleHat) {
+            const rr = this.raveFillType === 3 ? 1.18 : 1.14;
+            this.fireSample(time, this.sampleHat, 0.12, rr);
+        }
+        if (fillRim && this.sampleRim) {
+            this.fireSample(time, this.sampleRim, 0.12, 1.0);
+        }
     }
     async start() {
         if (this.started)
@@ -985,31 +897,45 @@ export class DroneWorkletEngine {
             if (this.drumGain) {
                 this.drumGain.gain.value = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
             }
-            // FX: right hand is the DJ macro
-            // Hold right pinch to engage FX strongly (filter + drive + delay throw)
+            const tNow = this.ctx?.currentTime ?? 0;
+            const morph = clamp((tNow - this.raveSectionChangeT) / 4.0, 0, 1);
+            const prev = this.ravePrevSection | 0;
+            const cur = this.raveSection | 0;
+            const secDrive = [0.0, 0.10, 0.20];
+            const secDelay = [0.0, 0.05, 0.10];
+            const secDelayFb = [0.0, 0.04, 0.08];
+            const secRumble = [0.0, 0.035, 0.070];
+            const secRumbleFb = [0.0, 0.04, 0.08];
+            const secQ = [0.0, 0.4, 0.8];
+            const baseDrive = (secDrive[prev] ?? 0) * (1 - morph) + (secDrive[cur] ?? 0) * morph;
+            const baseDelay = (secDelay[prev] ?? 0) * (1 - morph) + (secDelay[cur] ?? 0) * morph;
+            const baseDelayFb = (secDelayFb[prev] ?? 0) * (1 - morph) + (secDelayFb[cur] ?? 0) * morph;
+            const baseRumble = (secRumble[prev] ?? 0) * (1 - morph) + (secRumble[cur] ?? 0) * morph;
+            const baseRumbleFb = (secRumbleFb[prev] ?? 0) * (1 - morph) + (secRumbleFb[cur] ?? 0) * morph;
+            const baseQ = (secQ[prev] ?? 0) * (1 - morph) + (secQ[cur] ?? 0) * morph;
             const pinch = clamp(control.rightPinch, 0, 1);
             this.fxHold = Math.max(0, Math.min(1, this.fxHold + (pinch - this.fxHold) * 0.15));
             const fx = this.fxHold;
             const cut = expRange01(1 - control.rightY, 180, 14000);
-            const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1);
+            const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1) + baseQ;
             if (this.fxFilter) {
                 this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
                 this.fxFilter.frequency.value = cut;
                 this.fxFilter.Q.value = q;
             }
             if (this.fxDrive) {
-                this.fxDrive.curve = makeDriveCurve(0.15 + 0.85 * fx);
+                this.fxDrive.curve = makeDriveCurve(0.15 + 0.85 * fx + baseDrive);
             }
             if (this.fxDelay && this.fxDelayFb && this.fxDelayMix) {
                 this.fxDelay.delayTime.value = expRange01(control.rightX, 0.12, 0.38);
-                this.fxDelayFb.gain.value = 0.25 + 0.55 * fx;
-                this.fxDelayMix.gain.value = 0.00 + 0.55 * fx;
+                this.fxDelayFb.gain.value = 0.25 + 0.55 * fx + baseDelayFb;
+                this.fxDelayMix.gain.value = 0.00 + 0.55 * fx + baseDelay;
             }
             if (this.rumbleSend && this.rumbleFb && this.rumbleDelay) {
                 const b = clamp(control.build, 0, 1);
                 const dens = clamp(control.rightPinch, 0, 1);
-                this.rumbleSend.gain.value = 0.02 + 0.22 * b;
-                this.rumbleFb.gain.value = 0.50 + 0.35 * b;
+                this.rumbleSend.gain.value = 0.02 + 0.22 * b + baseRumble;
+                this.rumbleFb.gain.value = 0.50 + 0.35 * b + baseRumbleFb;
                 this.rumbleDelay.delayTime.value = expRange01(control.rightX, 0.18, 0.34);
                 if (this.rumbleLP)
                     this.rumbleLP.frequency.value = expRange01(control.rightY, 120, 260);

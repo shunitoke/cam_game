@@ -297,6 +297,18 @@ async function main() {
                 ["R", "reset"]
             ]
         },
+        sea: {
+            title: "Sea",
+            items: [
+                ["Right Y", "speed"],
+                ["Right pinch", "wave height"],
+                ["Right X", "wave freq"],
+                ["Left Y", "camera"],
+                ["Build", "atmosphere"],
+                ["MIDI", "burst"],
+                ["R", "reset"]
+            ]
+        },
         drone: {
             title: "Drone",
             items: [
@@ -452,33 +464,15 @@ async function main() {
     const renderHints = (sceneId, sceneName) => {
         const h = sceneHints[sceneId];
         const title = h?.title ?? sceneName;
-        const globalItems = [
-            ["Buttons", "Enter Performance / Stop / Prev / Next"],
-            ["Ctrl+H", "toggle HUD"],
-            ["Ctrl+A", "toggle audio"],
-            ["Ctrl+C", "toggle camera tracking"],
-            ["Ctrl+I", "toggle hand inference"],
-            ["Ctrl+V", "toggle audio viz"],
-            ["Ctrl+G", "toggle GPU render"],
-            ["Ctrl+←/→", "previous/next scene"],
-            ["Ctrl+R", "reset audio + visuals"],
-            ["Ctrl+P", "reload"],
-            ["Keys A..J", "play notes (when keyboard overlay is active)"],
-            ["FX key", "note 47 triggers a small visual burst"]
-        ];
         const sceneItems = h?.items ?? null;
         hintsSummary.textContent = `Hints: ${title}`;
         hintsBody.innerHTML = `
-      <div class="hintGrid">
-        ${globalItems.map(([k, v]) => `<div><b>${k}</b></div><div>${v}</div>`).join("\n")}
-      </div>
       ${sceneItems
             ? `
-      <div style="margin-top:10px; opacity:0.92;"><small><b>Scene controls</b></small></div>
-      <div class="hintGrid" style="margin-top:6px;">
+      <div class="hintGrid">
         ${sceneItems.map(([k, v]) => `<div><b>${k}</b></div><div>${v}</div>`).join("\n")}
       </div>`
-            : ""}
+            : `<div style="opacity:0.85;"><small>(no scene hints)</small></div>`}
       <div style="margin-top:8px; opacity:0.85;"><small>Scene: <b>${sceneName}</b> · Switch: <b>PREV/NEXT</b> or <b>←/→</b></small></div>
     `;
     };

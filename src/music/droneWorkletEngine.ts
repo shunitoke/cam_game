@@ -105,9 +105,56 @@ export class DroneWorkletEngine {
   private raveBpm = 138;
   private raveBar = 0;
 
+  private raveSection = 0;
+  private ravePrevSection = 0;
+  private raveNextSectionBar = 0;
+  private raveSectionChangeT = 0;
+  private raveFillType = 0;
+  private raveFillUntilBar = 0;
+  private raveRand = 0x12345678;
+
   private pulse = 0;
 
   private fxHold = 0;
+
+  private rand01() {
+    let x = this.raveRand | 0;
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    this.raveRand = x | 0;
+    return ((x >>> 0) % 1000000) / 1000000;
+  }
+
+  private pickNextSection() {
+    const r = this.rand01();
+    const a = (this.raveSection + 1) % 3;
+    const b = (this.raveSection + 2) % 3;
+    return r < 0.55 ? a : b;
+  }
+
+  private maybeAdvanceArrangement(bar: number) {
+    if (!this.ctx) return;
+    if (bar < this.raveNextSectionBar) return;
+
+    this.ravePrevSection = this.raveSection;
+    this.raveSection = this.pickNextSection();
+    this.raveSectionChangeT = this.ctx.currentTime;
+
+    const r = this.rand01();
+    const nextLen = r < 0.20 ? 32 : r < 0.75 ? 16 : 8;
+    this.raveNextSectionBar = bar + nextLen;
+
+    const fillChance = 0.12 + 0.08 * (this.raveSection === 2 ? 1 : 0);
+    if (this.raveFillUntilBar <= bar && this.rand01() < fillChance) {
+      const rr = this.rand01();
+      this.raveFillType = rr < 0.62 ? 1 : rr < 0.92 ? 2 : 3;
+      this.raveFillUntilBar = bar + 1;
+    } else {
+      this.raveFillType = 0;
+      this.raveFillUntilBar = 0;
+    }
+  }
 
   private started = false;
 
@@ -403,6 +450,13 @@ export class DroneWorkletEngine {
     this.raveNextStepT = ctx.currentTime + 0.05;
     this.raveStep = 0;
     this.raveBar = 0;
+    this.raveSection = 0;
+    this.ravePrevSection = 0;
+    this.raveNextSectionBar = 8;
+    this.raveSectionChangeT = ctx.currentTime;
+    this.raveFillType = 0;
+    this.raveFillUntilBar = 0;
+    this.raveRand = ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) | 0) || 0x12345678;
 
     const tick = () => {
       if (!this.ctx) return;
@@ -422,6 +476,9 @@ export class DroneWorkletEngine {
       }
 
       while (this.raveNextStepT < now + lookahead) {
+        if (this.raveStep === 0) {
+          this.maybeAdvanceArrangement(this.raveBar);
+        }
         this.scheduleRaveStep(this.raveNextStepT, this.raveStep);
         this.raveStep = (this.raveStep + 1) & 15;
         if (this.raveStep === 0) this.raveBar++;
@@ -511,8 +568,8 @@ export class DroneWorkletEngine {
     const dens = Math.min(1, Math.max(0, this.lastRightPinch));
 
     const bar = this.raveBar;
-    const section = bar < 4 ? 0 : bar < 8 ? 1 : bar < 16 ? 2 : 3;
-    const peak = section >= 3;
+    const section = this.raveSection;
+    const fillOn = this.raveFillUntilBar > bar;
 
     const kick = step === 0 || step === 4 || step === 8 || step === 12;
     const offHat = step === 2 || step === 6 || step === 10 || step === 14;
@@ -523,40 +580,39 @@ export class DroneWorkletEngine {
     const rim = step === 10;
     const snare = step === 12;
 
-    // Fills: last bar of 8-bar phrase
-    const inFillBar = (bar % 8) === 7;
-    const fillHat = inFillBar && (step === 11 || step === 13 || step === 15);
-    const fillRim = inFillBar && (step === 15 || step === 12);
+    const fillHat = fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
+    const fillRim = fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
 
     if (kick) {
       this.fireKick(time, 1.0);
     }
 
     // Occasional pre-push only at phrase end
-    if (inFillBar && step === 15) {
-      this.fireKick(time, 0.35);
+    if (fillOn && step === 15 && this.raveFillType === 3) {
+      this.fireKick(time, 0.22);
     }
 
     // Hats
     if (offHat && this.sampleHat) {
-      const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.20;
+      const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
       this.fireSample(time, this.sampleHat, v, 1.02);
     }
 
     // 16th hats come in gradually and with pinch
     if (hat16 && this.sampleHat) {
-      const on = (section >= 2 && dens > 0.2) || (peak && dens > 0.05);
+      const on = (section >= 1 && dens > 0.35) || (section >= 2 && dens > 0.22);
       if (on) {
-        const v = 0.06 + 0.10 * dens;
-        this.fireSample(time, this.sampleHat, v, 1.08);
+        const v = 0.045 + 0.085 * dens;
+        const r = 1.05 + 0.03 * section;
+        this.fireSample(time, this.sampleHat, v, r);
       }
     }
 
     // Open hat on the offbeat when density rises
     if (openHat && this.sampleOpenHat) {
       const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
-      if ((section >= 2 || peak) && m > 0.02) {
-        this.fireSample(time, this.sampleOpenHat, 0.08 + 0.16 * m, 1.0);
+      if (section >= 2 && m > 0.06) {
+        this.fireSample(time, this.sampleOpenHat, 0.06 + 0.12 * m, 1.0);
       }
     }
 
@@ -568,17 +624,19 @@ export class DroneWorkletEngine {
     }
     if (snare && this.sampleSnare) {
       // snare comes in later (avoid pop/party clap vibe)
-      if (section >= 2) {
-        this.fireSample(time + 0.004, this.sampleSnare, 0.18 + 0.18 * dens, 1.0);
+      if (section >= 1) {
+        const v = (section === 1 ? 0.11 : 0.14) + 0.14 * dens;
+        this.fireSample(time + 0.004, this.sampleSnare, v, 1.0);
       }
     }
 
     // Fills
     if (fillHat && this.sampleHat) {
-      this.fireSample(time, this.sampleHat, 0.18, 1.14);
+      const rr = this.raveFillType === 3 ? 1.18 : 1.14;
+      this.fireSample(time, this.sampleHat, 0.12, rr);
     }
     if (fillRim && this.sampleRim) {
-      this.fireSample(time, this.sampleRim, 0.18, 1.0);
+      this.fireSample(time, this.sampleRim, 0.12, 1.0);
     }
   }
 
@@ -938,14 +996,30 @@ export class DroneWorkletEngine {
         this.drumGain.gain.value = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
       }
 
-      // FX: right hand is the DJ macro
-      // Hold right pinch to engage FX strongly (filter + drive + delay throw)
+      const tNow = this.ctx?.currentTime ?? 0;
+      const morph = clamp((tNow - this.raveSectionChangeT) / 4.0, 0, 1);
+      const prev = this.ravePrevSection | 0;
+      const cur = this.raveSection | 0;
+
+      const secDrive = [0.0, 0.10, 0.20];
+      const secDelay = [0.0, 0.05, 0.10];
+      const secDelayFb = [0.0, 0.04, 0.08];
+      const secRumble = [0.0, 0.035, 0.070];
+      const secRumbleFb = [0.0, 0.04, 0.08];
+      const secQ = [0.0, 0.4, 0.8];
+
+      const baseDrive = (secDrive[prev] ?? 0) * (1 - morph) + (secDrive[cur] ?? 0) * morph;
+      const baseDelay = (secDelay[prev] ?? 0) * (1 - morph) + (secDelay[cur] ?? 0) * morph;
+      const baseDelayFb = (secDelayFb[prev] ?? 0) * (1 - morph) + (secDelayFb[cur] ?? 0) * morph;
+      const baseRumble = (secRumble[prev] ?? 0) * (1 - morph) + (secRumble[cur] ?? 0) * morph;
+      const baseRumbleFb = (secRumbleFb[prev] ?? 0) * (1 - morph) + (secRumbleFb[cur] ?? 0) * morph;
+      const baseQ = (secQ[prev] ?? 0) * (1 - morph) + (secQ[cur] ?? 0) * morph;
       const pinch = clamp(control.rightPinch, 0, 1);
       this.fxHold = Math.max(0, Math.min(1, this.fxHold + (pinch - this.fxHold) * 0.15));
 
       const fx = this.fxHold;
       const cut = expRange01(1 - control.rightY, 180, 14000);
-      const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1);
+      const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1) + baseQ;
       if (this.fxFilter) {
         this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
         this.fxFilter.frequency.value = cut;
@@ -953,20 +1027,20 @@ export class DroneWorkletEngine {
       }
 
       if (this.fxDrive) {
-        (this.fxDrive as any).curve = makeDriveCurve(0.15 + 0.85 * fx);
+        (this.fxDrive as any).curve = makeDriveCurve(0.15 + 0.85 * fx + baseDrive);
       }
 
       if (this.fxDelay && this.fxDelayFb && this.fxDelayMix) {
         this.fxDelay.delayTime.value = expRange01(control.rightX, 0.12, 0.38);
-        this.fxDelayFb.gain.value = 0.25 + 0.55 * fx;
-        this.fxDelayMix.gain.value = 0.00 + 0.55 * fx;
+        this.fxDelayFb.gain.value = 0.25 + 0.55 * fx + baseDelayFb;
+        this.fxDelayMix.gain.value = 0.00 + 0.55 * fx + baseDelay;
       }
 
       if (this.rumbleSend && this.rumbleFb && this.rumbleDelay) {
         const b = clamp(control.build, 0, 1);
         const dens = clamp(control.rightPinch, 0, 1);
-        this.rumbleSend.gain.value = 0.02 + 0.22 * b;
-        this.rumbleFb.gain.value = 0.50 + 0.35 * b;
+        this.rumbleSend.gain.value = 0.02 + 0.22 * b + baseRumble;
+        this.rumbleFb.gain.value = 0.50 + 0.35 * b + baseRumbleFb;
         this.rumbleDelay.delayTime.value = expRange01(control.rightX, 0.18, 0.34);
         if (this.rumbleLP) this.rumbleLP.frequency.value = expRange01(control.rightY, 120, 260);
         if (this.rumbleHP) this.rumbleHP.frequency.value = 28 + 18 * (1 - dens);

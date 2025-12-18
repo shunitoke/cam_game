@@ -3,9 +3,9 @@
 Browser-based interactive techno/electronic performance instrument:
 
 - Camera (laptop webcam) detects **two hands**
-- Hands modulate **in-app techno generator** (Tone.js)
+- Hands modulate **in-app techno generator** (sample-based drums + worklet synth)
 - Hands modulate **reactive visuals** (Three.js)
-- Gestures: **pinch**, **open palms reset**, **fist kill**, **open-palm swipe** to change scenes
+- Gestures: **pinch** + continuous XY control (see in-app Hints)
 - Optional: **MIDI keyboard/controller input** (Web MIDI)
 
 ## Run
@@ -26,6 +26,18 @@ npm run dev
 
 4. Click **Enter Performance** (browser requires a user gesture).
 
+## Build
+
+```bash
+npm run build
+```
+
+Preview the production build:
+
+```bash
+npm run preview
+```
+
 ## Browser / Permissions
 
 - Camera access is required for hand tracking.
@@ -34,31 +46,38 @@ npm run dev
 
 ## Controls (MVP)
 
-### Roles
+### Modes
 
-- **Right hand = Sound / FX**
-- **Left hand = Groove / Mix**
+- **RAVE / performance**: the drum machine runs by itself; hands act like a DJ macro.
+- **DRONE**: drone instrument (bass + guitar stems) controlled by hands.
 
-### Continuous (always-on)
+### RAVE (performance) hand mapping
 
-- **Right X**: master low-pass cutoff (left = darker, right = brighter)
-- **Right Y**: resonance / bite (down = softer, up = sharper)
-- **Right pinch** (thumb-index distance): FX wet (delay+reverb macro)
-- **Right speed**: drive/distortion amount
+- **Left X**: tempo
+- **Right Y**: drum tone
+- **Right pinch**: density/energy (also feeds some space/rumble)
+- **Build**: intensity/drive
 
-- **Left X**: hat density (quantized per beat)
-- **Left Y**: bass activity (quantized per beat)
-- **Left pinch**: kick weight (sub/attack macro)
-- **Two-hands distance**: build/drop macro (more width, FX, intensity)
+Scene-specific visual controls are shown in the in-app **Hints** panel (per scene).
 
-### Discrete gestures (safe)
+### DRONE hand mapping
 
-- **Fist (either hand, hold)**: kill/mute (release returns smoothly)
-- **Open palms (both hands, hold ~0.5s)**: safe reset to stable groove
+- **Left hand (bass)**
+  - Left pinch: bass level
+  - Left X: bass pitch
+  - Left Y: bass tone
+- **Right hand (guitar)**
+  - Right pinch: guitar level
+  - Right X: guitar pitch
+  - Right Y: guitar brightness
 
 ### Scene switching
 
-- **Open left palm** (navigation modifier) + **swipe left/right**: previous/next scene
+- Use **PREV/NEXT** buttons or **←/→**.
+- **AUTOPLAY** switches scenes automatically in **RAVE**.
+- The `drone` scene is **exclusive** to DRONE mode:
+  - Entering **DRONE** forces scene to `drone`.
+  - In **RAVE**, cycling/autoplay skips `drone`.
 
 ### WaveLab edit mode
 
@@ -76,20 +95,22 @@ npm run dev
 - **Scene 4: DomainWarp**
 - **Scene 5: Cellular**
 - **Scene 6: Tunnel**
-- **Scene 7: Quasicrystals**
-- **Scene 8: ReactionDiffusion**
-- **Scene 9: DLA**
-- **Scene 10: Bifurcation**
-- **Scene 11: WaveLab (per-voice waveforms + timbre morph)**
-- **Scene 12: Physics (springs/cloth)**
-- **Scene 13: Lloyd**
-- **Scene 14: RRT**
-- **Scene 15: Arboretum**
-- **Scene 16: Koch**
-- **Scene 17: BoS Warp (fBm + domain warping)**
-- **Scene 18: Kaleidoscope**
-- **Scene 19: Metaballs**
-- **Scene 20: ASCII**
+- **Scene 7: Sea**
+- **Scene 8: Drone**
+- **Scene 9: Quasicrystals**
+- **Scene 10: ReactionDiffusion**
+- **Scene 11: DLA**
+- **Scene 12: Bifurcation**
+- **Scene 13: WaveLab (per-voice waveforms + timbre morph)**
+- **Scene 14: Physics (springs/cloth)**
+- **Scene 15: Lloyd**
+- **Scene 16: RRT**
+- **Scene 17: Arboretum**
+- **Scene 18: Koch**
+- **Scene 19: BoS Warp (fBm + domain warping)**
+- **Scene 20: Kaleidoscope**
+- **Scene 21: Metaballs**
+- **Scene 22: ASCII**
 
 ### ASCII scene (camera silhouette)
 
@@ -101,7 +122,8 @@ npm run dev
 
 - **Prev Scene / Next Scene**: switch scenes
 - **Safe Mode**: reduces GPU + tracking load (recommended on weak iGPU/APU)
-- **Overlay**: toggle hand skeleton overlay rendering
+- **HANDS: ON/OFF**: toggle hand skeleton overlay rendering
+- **AUTOPLAY: ON/OFF**: auto scene switching (RAVE only)
 - **MODE**:
   - **RAVE**: main performance mode (groove runs)
   - **DRONE**: gesture-only sound mode (no groove; sound comes from pinch/motion)
@@ -143,21 +165,12 @@ If drum samples fail to load (network/CORS), the app falls back to synth drums s
 
 ### Local samples (optional)
 
-You can override the built-in one-shot drum samples with your own **local** WAV files.
+The app loads drum one-shots from `/samples/909/*` and drone stems from `/samples/*`.
 
-- Install path:
-  - `public/samples/user/909/`
-- Filenames (must match exactly):
-  - `kick.wav`
-  - `snare.wav`
-  - `hihat.wav`
-  - `clap.wav`
-  - `cowbell.wav`
-  - `tom.wav` (used for PERC)
-
-If these files are missing, the app automatically falls back to the hosted 909 samples and/or synth fallback so it always makes sound.
-
-Important: this folder is gitignored (`public/samples/user/`) so you don’t accidentally commit/redistribute third-party samples.
+- Drum kit (909): `public/samples/909/`
+- Drone stems: `public/samples/`
+  - `bass.ogg`
+  - `guitar.ogg`
 
 ### Music start behavior
 

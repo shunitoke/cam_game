@@ -332,6 +332,38 @@ async function main() {
         ["R", "reset"]
       ]
     },
+    sineWarp: {
+      title: "SineWarp",
+      items: [
+        ["Right Y", "speed"],
+        ["Right pinch", "bump"],
+        ["Build", "drive"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
+      ]
+    },
+    coyote: {
+      title: "CoyoteFractal",
+      items: [
+        ["Right X", "yaw"],
+        ["Left Y", "pitch"],
+        ["Right pinch", "chaos"],
+        ["Right speed", "detail"],
+        ["Build", "drive"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
+      ]
+    },
+    nikos: {
+      title: "NikosMarch",
+      items: [
+        ["Right Y", "speed"],
+        ["Right speed", "steps"],
+        ["Build", "storm"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
+      ]
+    },
     drone: {
       title: "Drone",
       items: [

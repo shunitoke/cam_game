@@ -1,48 +1,39 @@
 import * as THREE from "three";
-
-import type { ControlState } from "../../control/types";
-
-function clamp01(v: number) {
-  return Math.min(1, Math.max(0, v));
+function clamp01(v) {
+    return Math.min(1, Math.max(0, v));
 }
-
 export class SeaScene {
-  private scene = new THREE.Scene();
-  private mesh: any;
-  private mat: any;
-  private t = 0;
-
-  private burst = 0;
-
-  private baseW = 4.2;
-  private baseH = 2.4;
-
-  constructor() {
-    this.scene.background = new THREE.Color(0x05060a);
-
-    const geom = new THREE.PlaneGeometry(this.baseW, this.baseH, 1, 1);
-
-    this.mat = new THREE.ShaderMaterial({
-      depthWrite: false,
-      depthTest: false,
-      transparent: false,
-      uniforms: {
-        uTime: { value: 0 },
-        uRes: { value: new THREE.Vector2(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight)) },
-        u_speed: { value: 1.0 },
-        u_waveHeight: { value: 1.0 },
-        u_waveFrequency: { value: 1.0 },
-        u_perspective: { value: 1.0 },
-        u_atmosphere: { value: 1.0 }
-      },
-      vertexShader: `
+    scene = new THREE.Scene();
+    mesh;
+    mat;
+    t = 0;
+    burst = 0;
+    baseW = 4.2;
+    baseH = 2.4;
+    constructor() {
+        this.scene.background = new THREE.Color(0x05060a);
+        const geom = new THREE.PlaneGeometry(this.baseW, this.baseH, 1, 1);
+        this.mat = new THREE.ShaderMaterial({
+            depthWrite: false,
+            depthTest: false,
+            transparent: false,
+            uniforms: {
+                uTime: { value: 0 },
+                uRes: { value: new THREE.Vector2(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight)) },
+                u_speed: { value: 1.0 },
+                u_waveHeight: { value: 1.0 },
+                u_waveFrequency: { value: 1.0 },
+                u_perspective: { value: 1.0 },
+                u_atmosphere: { value: 1.0 }
+            },
+            vertexShader: `
         varying vec2 vUv;
         void main(){
           vUv = uv;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
-      fragmentShader: `
+            fragmentShader: `
         precision mediump float;
         varying vec2 vUv;
 
@@ -243,64 +234,51 @@ export class SeaScene {
           gl_FragColor = vec4(color, 1.0);
         }
       `
-    });
-
-    this.mesh = new THREE.Mesh(geom, this.mat);
-    this.mesh.position.z = -0.4;
-    this.scene.add(this.mesh);
-  }
-
-  onResize(camera: any) {
-    const cam: any = camera as any;
-    const dist = Math.abs((cam.position?.z ?? 2.2) - (this.mesh?.position?.z ?? -0.4));
-    const vFov = ((cam.fov ?? 55) * Math.PI) / 180;
-    const height = 2 * dist * Math.tan(vFov * 0.5);
-    const width = height * (cam.aspect ?? window.innerWidth / window.innerHeight);
-    this.mesh.scale.set(width / this.baseW, height / this.baseH, 1);
-
-    const iw = Math.max(1, Math.floor(window.innerWidth));
-    const ih = Math.max(1, Math.floor(window.innerHeight));
-    this.mat.uniforms.uRes.value.set(iw, ih);
-  }
-
-  getScene() {
-    return this.scene;
-  }
-
-  reset() {
-    this.t = 0;
-    this.burst = 0;
-  }
-
-  triggerBurst(amount: number) {
-    this.burst = Math.max(this.burst, clamp01(amount));
-  }
-
-  update(control: ControlState) {
-    this.t += control.dt;
-
-    this.burst = Math.max(0, this.burst - control.dt * 2.6);
-
-    const bp = clamp01(control.beatPulse ?? 0);
-    const b = clamp01(this.burst + bp * 0.85);
-
-    const speed = clamp01(control.rightY * 0.85 + b * 0.35);
-    const waveHeight = clamp01(control.rightPinch * 0.95 + b * 0.25);
-    const waveFreq = clamp01(control.rightX * 0.85 + b * 0.25);
-    const persp = clamp01(control.leftY * 0.85 + 0.35 * b);
-    const atmo = clamp01(control.build * 0.85 + 0.45 * b);
-
-    this.mat.uniforms.uTime.value = this.t * (0.35 + 1.65 * speed);
-
-    this.mat.uniforms.u_speed.value = 0.65 + 1.55 * speed;
-    this.mat.uniforms.u_waveHeight.value = 0.35 + 1.85 * waveHeight;
-    this.mat.uniforms.u_waveFrequency.value = 0.65 + 2.25 * waveFreq;
-    this.mat.uniforms.u_perspective.value = 0.35 + 2.25 * persp;
-    this.mat.uniforms.u_atmosphere.value = 0.55 + 1.95 * atmo;
-  }
-
-  dispose() {
-    this.mesh.geometry.dispose();
-    this.mat.dispose();
-  }
+        });
+        this.mesh = new THREE.Mesh(geom, this.mat);
+        this.mesh.position.z = -0.4;
+        this.scene.add(this.mesh);
+    }
+    onResize(camera) {
+        const cam = camera;
+        const dist = Math.abs((cam.position?.z ?? 2.2) - (this.mesh?.position?.z ?? -0.4));
+        const vFov = ((cam.fov ?? 55) * Math.PI) / 180;
+        const height = 2 * dist * Math.tan(vFov * 0.5);
+        const width = height * (cam.aspect ?? window.innerWidth / window.innerHeight);
+        this.mesh.scale.set(width / this.baseW, height / this.baseH, 1);
+        const iw = Math.max(1, Math.floor(window.innerWidth));
+        const ih = Math.max(1, Math.floor(window.innerHeight));
+        this.mat.uniforms.uRes.value.set(iw, ih);
+    }
+    getScene() {
+        return this.scene;
+    }
+    reset() {
+        this.t = 0;
+        this.burst = 0;
+    }
+    triggerBurst(amount) {
+        this.burst = Math.max(this.burst, clamp01(amount));
+    }
+    update(control) {
+        this.t += control.dt;
+        this.burst = Math.max(0, this.burst - control.dt * 2.6);
+        const bp = clamp01(control.beatPulse ?? 0);
+        const b = clamp01(this.burst + bp * 0.85);
+        const speed = clamp01(control.rightY * 0.85 + b * 0.35);
+        const waveHeight = clamp01(control.rightPinch * 0.95 + b * 0.25);
+        const waveFreq = clamp01(control.rightX * 0.85 + b * 0.25);
+        const persp = clamp01(control.leftY * 0.85 + 0.35 * b);
+        const atmo = clamp01(control.build * 0.85 + 0.45 * b);
+        this.mat.uniforms.uTime.value = this.t * (0.35 + 1.65 * speed);
+        this.mat.uniforms.u_speed.value = 0.65 + 1.55 * speed;
+        this.mat.uniforms.u_waveHeight.value = 0.35 + 1.85 * waveHeight;
+        this.mat.uniforms.u_waveFrequency.value = 0.65 + 2.25 * waveFreq;
+        this.mat.uniforms.u_perspective.value = 0.35 + 2.25 * persp;
+        this.mat.uniforms.u_atmosphere.value = 0.55 + 1.95 * atmo;
+    }
+    dispose() {
+        this.mesh.geometry.dispose();
+        this.mat.dispose();
+    }
 }
