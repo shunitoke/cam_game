@@ -490,6 +490,11 @@ async function main() {
   let tVisualsMs = 0;
   let tTickMs = 0;
 
+  let lastVisualUpdateAt = 0;
+
+  let audioUpdateTimer: number | null = null;
+  let lastControlForAudio: any = null;
+
   const ema = (prev: number, next: number, a: number) => (prev ? prev + (next - prev) * a : next);
 
   let lastTickAt = performance.now();
@@ -956,6 +961,8 @@ async function main() {
     if (running) audSpan.title = `beat: ${bpOut.toFixed(3)}`;
     const controlWithViz = control as any;
 
+    lastControlForAudio = controlWithViz;
+
     const sceneDelta = controlWithViz.events.sceneDelta;
     if (sceneDelta !== 0) {
       const s = visuals.nextScene(sceneDelta);
@@ -969,15 +976,16 @@ async function main() {
       visuals.reset();
     }
 
-      const aT0 = performance.now();
-      if (audioOn) {
-        audio?.update(controlWithViz);
-      }
-      const aT1 = performance.now();
-      tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
-
       const vT0 = performance.now();
-      visuals.update(controlWithViz);
+      // Rendering at full rAF speed can starve Tone's scheduler on some machines.
+      // Cap visual updates in the foreground.
+      const nowVis = performance.now();
+      const targetFps = safeMode ? 30 : 45;
+      const minVisualIntervalMs = 1000 / Math.max(1, targetFps);
+      if (!lastVisualUpdateAt || nowVis - lastVisualUpdateAt >= minVisualIntervalMs) {
+        lastVisualUpdateAt = nowVis;
+        visuals.update(controlWithViz);
+      }
       const vT1 = performance.now();
       tVisualsMs = ema(tVisualsMs, vT1 - vT0, 0.12);
 
@@ -1268,6 +1276,30 @@ async function main() {
     overlayBtn.disabled = false;
     startBtn.textContent = "Enter Performance";
     lastT = performance.now();
+
+    if (audioUpdateTimer !== null) {
+      try {
+        window.clearInterval(audioUpdateTimer);
+      } catch {
+      }
+      audioUpdateTimer = null;
+    }
+    if (audioOn) {
+      audioUpdateTimer = window.setInterval(() => {
+        try {
+          if (!running || !audioOn) return;
+          const c = lastControlForAudio;
+          if (!c) return;
+          const aT0 = performance.now();
+          audio?.update(c);
+          const aT1 = performance.now();
+          tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+        } catch {
+          // ignore
+        }
+      }, 33);
+    }
+
     requestAnimationFrame(tick);
   };
 
@@ -1278,6 +1310,13 @@ async function main() {
     nextBtn.disabled = true;
     safeBtn.disabled = true;
     overlayBtn.disabled = true;
+    if (audioUpdateTimer !== null) {
+      try {
+        window.clearInterval(audioUpdateTimer);
+      } catch {
+      }
+      audioUpdateTimer = null;
+    }
     await audio?.stop();
     tracker.stop();
     midi.stop();
@@ -1405,17 +1444,39 @@ async function main() {
       if (!audio) return;
       audioOn = !audioOn;
       if (!audioOn) {
+        if (audioUpdateTimer !== null) {
+          try {
+            window.clearInterval(audioUpdateTimer);
+          } catch {
+          }
+          audioUpdateTimer = null;
+        }
         void audio.stop();
         audSpan.textContent = "off";
       } else {
+        audSpan.textContent = "starting";
         audio.setTrack(audioTrack);
         audio.setMode(audioMode);
         audio.setSafeMode(safeMode);
         void audio.start();
         audSpan.textContent = "on";
+        if (audioUpdateTimer === null && running) {
+          audioUpdateTimer = window.setInterval(() => {
+            try {
+              if (!running || !audioOn) return;
+              const c = lastControlForAudio;
+              if (!c) return;
+              const aT0 = performance.now();
+              audio?.update(c);
+              const aT1 = performance.now();
+              tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+            } catch {
+              // ignore
+            }
+          }, 33);
+        }
       }
     }
-
     if (e.key.toLowerCase() === "p") {
       requestReload("manual");
     }
