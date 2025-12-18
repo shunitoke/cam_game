@@ -320,6 +320,18 @@ async function main() {
         ["R", "reset"]
       ]
     },
+    sea: {
+      title: "Sea",
+      items: [
+        ["Right Y", "speed"],
+        ["Right pinch", "wave height"],
+        ["Right X", "wave freq"],
+        ["Left Y", "camera"],
+        ["Build", "atmosphere"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
+      ]
+    },
     drone: {
       title: "Drone",
       items: [
@@ -476,18 +488,18 @@ async function main() {
   const renderHints = (sceneId: string, sceneName: string) => {
     const h = sceneHints[sceneId];
     const title = h?.title ?? sceneName;
-    const items = h?.items ?? [
-      ["Left", "mix"],
-      ["Right", "space"],
-      ["Build", "energy"],
-      ["R", "reset"]
-    ];
+    const sceneItems = h?.items ?? null;
 
     hintsSummary.textContent = `Hints: ${title}`;
     hintsBody.innerHTML = `
+      ${
+        sceneItems
+          ? `
       <div class="hintGrid">
-        ${items.map(([k, v]) => `<div><b>${k}</b></div><div>${v}</div>`).join("\n")}
-      </div>
+        ${sceneItems.map(([k, v]) => `<div><b>${k}</b></div><div>${v}</div>`).join("\n")}
+      </div>`
+          : `<div style="opacity:0.85;"><small>(no scene hints)</small></div>`
+      }
       <div style="margin-top:8px; opacity:0.85;"><small>Scene: <b>${sceneName}</b> · Switch: <b>PREV/NEXT</b> or <b>←/→</b></small></div>
     `;
   };
@@ -525,14 +537,21 @@ async function main() {
   setAutoplayOn(autoplayOn);
 
   const applySceneDelta = (delta: -1 | 1) => {
-    // "drone" scene is exclusive to DRONE mode.
-    // When in performance mode, skip over it during cycling/autoplay.
+    // DRONE mode is locked to the exclusive drone scene.
+    if (audioMode === "drone") {
+      const s = visuals.setScene("drone");
+      sceneBadge.textContent = `Scene: ${s.name}`;
+      renderHints(s.id, s.name);
+      audio?.setScene(s.id);
+      lastAutoSceneAt = performance.now();
+      return s;
+    }
+
+    // In performance mode, skip over the drone scene during cycling/autoplay.
     let s = visuals.nextScene(delta);
-    if (audioMode === "performance") {
-      let guard = 0;
-      while (s.id === "drone" && guard++ < 6) {
-        s = visuals.nextScene(delta);
-      }
+    let guard = 0;
+    while (s.id === "drone" && guard++ < 6) {
+      s = visuals.nextScene(delta);
     }
     sceneBadge.textContent = `Scene: ${s.name}`;
     renderHints(s.id, s.name);
@@ -1457,14 +1476,18 @@ async function main() {
       sceneBadge.textContent = `Scene: ${s.name}`;
       renderHints(s.id, s.name);
       audio?.setScene(s.id);
+
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
     } else {
-      // Leaving DRONE: if we're on the exclusive drone scene, jump back to a normal scene.
-      if (visuals.current.id === "drone") {
-        const s = visuals.setScene("metaballs");
-        sceneBadge.textContent = `Scene: ${s.name}`;
-        renderHints(s.id, s.name);
-        audio?.setScene(s.id);
-      }
+      // Leaving DRONE: always jump to the first rave scene.
+      const s = visuals.setScene("particles");
+      sceneBadge.textContent = `Scene: ${s.name}`;
+      renderHints(s.id, s.name);
+      audio?.setScene(s.id);
+
+      prevBtn.disabled = !running;
+      nextBtn.disabled = !running;
     }
     lastAutoSceneAt = performance.now();
   });
