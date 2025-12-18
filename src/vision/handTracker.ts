@@ -27,13 +27,18 @@ function avg(points: Vec2[]): Vec2 {
 function handedLabelOf(result: any, i: number): { label: HandLabel; score: number } {
   const handedness = result?.handedness ?? result?.handednesses;
   const first = handedness?.[i]?.[0];
-  const labelRaw = (first?.categoryName ?? first?.displayName ?? "Unknown") as string;
   const score = typeof first?.score === "number" ? first.score : 0;
+  const labelRaw =
+    (typeof first?.categoryName === "string" && first.categoryName) ||
+    (typeof first?.displayName === "string" && first.displayName) ||
+    (typeof first?.label === "string" && first.label) ||
+    (typeof first?.name === "string" && first.name) ||
+    "";
   if (labelRaw === "Left" || labelRaw === "Right") return { label: labelRaw, score };
   return { label: "Unknown", score };
 }
 
-export class HandTracker {
+ export class HandTracker {
   private handLandmarker: HandLandmarker | null = null;
   private result: HandLandmarkerResult | null = null;
 
@@ -77,14 +82,14 @@ export class HandTracker {
   private videoTrack: MediaStreamTrack | null = null;
   private lastVideoTime = -1;
 
-  private targetFps = 12;
-  private minIntervalMs = 1000 / 12;
+  private targetFps = 15;
+  private minIntervalMs = 1000 / 15;
   private lastInferT = -Infinity;
   private safeMode = false;
 
   private inferMsEma = 0;
   private lastInferMs = 0;
-  private dynamicMinIntervalMs = 1000 / 15;
+  private dynamicMinIntervalMs = this.minIntervalMs;
 
   private smoothTauSec = 0.18;
 
@@ -93,6 +98,8 @@ export class HandTracker {
   private inferEnabled = true;
 
   private inferPauseUntilMs = 0;
+
+  private lastSpikeAtMs = -Infinity;
 
   private currentNumHands = 0;
   private overBudgetMs = 0;
@@ -127,7 +134,7 @@ export class HandTracker {
         facingMode: "user",
         width: { ideal: 640 },
         height: { ideal: 360 },
-        frameRate: { ideal: 24, max: 24 }
+        frameRate: { ideal: 30, max: 30 }
       },
       audio: false
     });
@@ -207,7 +214,7 @@ export class HandTracker {
   setSafeMode(on: boolean) {
     this.safeMode = on;
     // In safe mode we need a much lower tracker budget; the HUD showed ~35ms for tracking.
-    this.targetFps = on ? 6 : 12;
+    this.targetFps = on ? 8 : 15;
     this.minIntervalMs = 1000 / this.targetFps;
     this.dynamicMinIntervalMs = this.minIntervalMs;
 
@@ -216,7 +223,7 @@ export class HandTracker {
     if (track && typeof track.applyConstraints === "function") {
       const constraints: MediaTrackConstraints = on
         ? { width: { ideal: 384 }, height: { ideal: 216 }, frameRate: { ideal: 15, max: 15 } }
-        : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } };
+        : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 30 } };
       try {
         void track.applyConstraints(constraints);
       } catch {
@@ -282,10 +289,19 @@ export class HandTracker {
 
     this.lastInferMs = inferMs;
 
+    // MediaPipe can occasionally spike very high (hundreds of ms to seconds). We keep the
+    // raw value for diagnostics, but we must not let rare outliers poison the EMA used for
+    // adaptive throttling, otherwise inference cadence can collapse to ~0.1 FPS.
+    const inferMsForAdaptive = Math.min(inferMs, this.safeMode ? 140 : 180);
+
     try {
-      const spikeMs = this.safeMode ? 70 : 90;
-      if (inferMs > spikeMs) {
-        this.inferPauseUntilMs = nowMs + (this.safeMode ? 3000 : 1800);
+      const spikeMs = this.safeMode ? 220 : 300;
+      const spikeCooldownMs = this.safeMode ? 2500 : 2000;
+      const spikeRefMs = this.inferMsEma || inferMsForAdaptive;
+      const isSpike = inferMs > spikeMs && inferMs > spikeRefMs * 2.2;
+      if (isSpike && nowMs - this.lastSpikeAtMs > spikeCooldownMs) {
+        this.lastSpikeAtMs = nowMs;
+        this.inferPauseUntilMs = nowMs + (this.safeMode ? 650 : 450);
         const canSet = typeof (lm as any).setOptions === "function";
         if (canSet && this.currentNumHands > 1) {
           try {
@@ -296,14 +312,17 @@ export class HandTracker {
         }
       }
 
-      this.inferMsEma = this.inferMsEma ? this.inferMsEma + (inferMs - this.inferMsEma) * 0.12 : inferMs;
+      this.inferMsEma = this.inferMsEma
+        ? this.inferMsEma + (inferMsForAdaptive - this.inferMsEma) * 0.12
+        : inferMsForAdaptive;
 
       // Adaptive throttling: if inference is expensive, reduce how often we run it.
       // Keeps visuals responsive even if tracking gets heavy.
-      const budgetMs = this.safeMode ? 12 : 18;
+      const budgetMs = this.safeMode ? 22 : 32;
       const slow = this.inferMsEma > budgetMs;
-      const mul = slow ? 1.75 : 1.0;
-      this.dynamicMinIntervalMs = Math.max(this.minIntervalMs, this.inferMsEma * mul);
+      const mul = slow ? 1.2 : 1.0;
+      const maxIntervalMs = this.safeMode ? 400 : 250;
+      this.dynamicMinIntervalMs = Math.min(maxIntervalMs, Math.max(this.minIntervalMs, this.inferMsEma * mul));
 
       if (this.cfg.maxHands > 1) {
         const dMs = Math.max(0, dt * 1000);
