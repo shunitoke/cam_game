@@ -1028,6 +1028,9 @@ async function main() {
     const infLastMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
     const infBackend = camTrackOn && camInferOn ? (trAny.getInferBackend?.() ?? "main") : "off";
     const workerErr = camTrackOn && camInferOn ? (trAny.getWorkerError?.() ?? null) : null;
+
+    const audAny: any = audio as any;
+    const audErr = audioOn ? (audAny?.getLastError?.() ?? null) : null;
     const infStr =
       !camInferOn
         ? "off"
@@ -1043,6 +1046,7 @@ async function main() {
       `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
       `\nlow ${safeMode ? "on" : "off"}  cam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
       `${workerErr ? `\nworkerErr ${workerErr}` : ""}` +
+      `${audErr ? `\naudioErr ${audErr}` : ""}` +
       `\nerr ${lastErr ?? "-"}` +
       `\nrej ${lastRej ?? "-"}` +
       `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;

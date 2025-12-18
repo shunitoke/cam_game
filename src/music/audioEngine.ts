@@ -67,6 +67,8 @@ export class AudioEngine {
 
   private safeMode = false;
 
+  private lastError: string | null = null;
+
   private mode: "performance" | "drone" = "performance";
   private track: "rave" | "modern" | "melodic" = "rave";
   private gestureOn = false;
@@ -965,6 +967,45 @@ export class AudioEngine {
   setSafeMode(on: boolean) {
     this.safeMode = on;
     this.paramUpdateIntervalMs = on ? 80 : 50;
+
+    // Reduce CPU-heavy FX in safe mode.
+    try {
+      this.reverb.decay = on ? 1.6 : 3.2;
+    } catch (e) {
+      this.lastError = this.lastError ?? (e instanceof Error ? e.message : "reverb");
+    }
+    try {
+      this.reverb.wet.value = on ? 0.06 : this.reverb.wet.value;
+    } catch (e) {
+      this.lastError = this.lastError ?? (e instanceof Error ? e.message : "reverbWet");
+    }
+
+    try {
+      // Chebyshev + oversampling can be expensive on some devices.
+      (this.droneCheby as any).set({ order: on ? 10 : 24, oversample: on ? "none" : "2x" } as any);
+    } catch (e) {
+      this.lastError = this.lastError ?? (e instanceof Error ? e.message : "cheby");
+    }
+    try {
+      // Keep distortion subtle in safe mode.
+      this.droneDrive.distortion = on ? 0.45 : 0.75;
+    } catch (e) {
+      this.lastError = this.lastError ?? (e instanceof Error ? e.message : "droneDrive");
+    }
+
+    // Cap polyphony to avoid CPU spikes.
+    try {
+      (this.stab as any).maxPolyphony = on ? 4 : 8;
+    } catch {
+    }
+    try {
+      (this.pad as any).maxPolyphony = on ? 4 : 8;
+    } catch {
+    }
+  }
+
+  getLastError(): string | null {
+    return this.lastError;
   }
 
   setMode(mode: "performance" | "drone") {
@@ -1027,6 +1068,18 @@ export class AudioEngine {
 
   async start() {
     if (this.started) return;
+
+    // Make scheduling more resilient to sporadic main-thread stalls.
+    // This trades a bit of latency for fewer audible hiccups under load.
+    try {
+      const ctx: any = (Tone as any).getContext?.() ?? (Tone as any).context;
+      if (ctx) {
+        if (typeof ctx.lookAhead === "number") ctx.lookAhead = Math.max(ctx.lookAhead, 0.18);
+        if (typeof ctx.updateInterval === "number") ctx.updateInterval = Math.min(Math.max(ctx.updateInterval, 0.03), 0.08);
+      }
+    } catch {
+    }
+
     await Tone.start();
     void this.loadMidiSamples();
     // Never block entering performance on network / asset stalls.
@@ -1525,7 +1578,11 @@ export class AudioEngine {
 
       this.droneDrive.distortion = lerp(0.75, 0.99, rPinch);
       try {
-        this.droneCheby.set({ order: Math.round(lerp(18, 42, rPinch)) } as any);
+        // Limit waveshaping complexity in normal mode to avoid CPU spikes.
+        // Safe mode already applies an even lower cap.
+        const maxOrder = this.safeMode ? 16 : 28;
+        const minOrder = this.safeMode ? 8 : 14;
+        this.droneCheby.set({ order: Math.round(lerp(minOrder, maxOrder, rPinch)) } as any);
       } catch {
       }
       try {
@@ -1696,8 +1753,11 @@ export class AudioEngine {
     this.delay.wet.rampTo(lerp(0.02, 0.32, wetOut), 0.05);
     this.delay.feedback.rampTo(lerp(0.18, 0.52, wetOut), 0.05);
 
-    this.reverb.wet.rampTo(lerp(0.02, 0.38, clamp01(wetOut + this.midiRev * 0.65)), 0.05);
-    this.reverb.decay = lerp(2.0, 6.0, wetOut);
+    // Reverb is one of the biggest CPU contributors. Keep it capped in normal mode.
+    // Safe mode already reduces it further.
+    const wetMax = this.safeMode ? 0.16 : 0.28;
+    this.reverb.wet.rampTo(lerp(0.02, wetMax, clamp01(wetOut + this.midiRev * 0.65)), 0.05);
+    this.reverb.decay = lerp(1.8, this.safeMode ? 3.0 : 4.2, wetOut);
     this.reverb.preDelay = lerp(0.005, 0.03, wetOut);
 
     const driveOut = clamp01((drive + this.midiMod * 0.65) * (0.65 + 0.55 * introEnergy) * sectionEnergy);
@@ -1744,7 +1804,9 @@ export class AudioEngine {
 
     if (this.selectedVoice === 6) {
       this.padPre.frequency.rampTo(lerp(220, 2600, morph), 0.18);
-      this.reverb.wet.rampTo(lerp(0.06, 0.55, clamp01(build * 0.8 + morph * 0.2)), 0.15);
+      // Keep pad wash big but not catastrophically expensive.
+      const padWetMax = this.safeMode ? 0.20 : 0.36;
+      this.reverb.wet.rampTo(lerp(0.06, padWetMax, clamp01(build * 0.8 + morph * 0.2)), 0.15);
     }
 
     const buildLift = build * 0.35;
