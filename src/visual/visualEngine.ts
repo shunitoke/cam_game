@@ -100,7 +100,8 @@ export class VisualEngine {
         uInvRes: { value: new THREE.Vector2(1 / Math.max(1, window.innerWidth), 1 / Math.max(1, window.innerHeight)) },
         uCrt: { value: 0.85 },
         uChromAb: { value: 0.55 },
-        uFxaa: { value: 1.0 }
+        uFxaa: { value: 1.0 },
+        uGain: { value: 1.18 }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -120,6 +121,7 @@ export class VisualEngine {
         uniform float uCrt;
         uniform float uChromAb;
         uniform float uFxaa;
+        uniform float uGain;
 
         vec2 catMap(vec2 uv){
           // Arnold's Cat Map on [0,1) torus.
@@ -224,6 +226,9 @@ export class VisualEngine {
 
           // Slight bloom-ish lift.
           col += 0.015 * crt;
+
+          // Overall screen gain (TV brightness).
+          col *= max(0.0, uGain);
 
           // Clamp edges outside barrel.
           float inb = step(0.0, duv.x) * step(0.0, duv.y) * step(duv.x, 1.0) * step(duv.y, 1.0);
