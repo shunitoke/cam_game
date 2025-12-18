@@ -214,7 +214,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
   setSafeMode(on: boolean) {
     this.safeMode = on;
     // In safe mode we need a much lower tracker budget; the HUD showed ~35ms for tracking.
-    this.targetFps = on ? 8 : 15;
+    this.targetFps = on ? 12 : 15;
     this.minIntervalMs = 1000 / this.targetFps;
     this.dynamicMinIntervalMs = this.minIntervalMs;
 
@@ -247,113 +247,129 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     const lm = this.handLandmarker;
     const videoEl = this.video;
 
-    const nowMs = typeof performance !== "undefined" ? performance.now() : t;
-
     if (!lm || !videoEl) {
       return { count: 0, hands: [] };
     }
 
+    // If we haven't produced a fresh inference for a while, clear stale output so hands
+    // don't appear to stick when MediaPipe stalls/throttles.
+    if (this.result) {
+      const staleMs = this.safeMode ? 750 : 500;
+      const videoAdvanced = videoEl.currentTime !== this.lastVideoTime;
+      if (videoAdvanced && t - this.lastInferT > staleMs) {
+        this.result = null;
+        this.prevCenters.clear();
+      }
+    }
+
     if (!this.inferEnabled) {
-      return this.smoothToTargets(dt);
+      this.result = null;
+      this.prevCenters.clear();
+      return { count: 0, hands: [] };
     }
 
-    if (nowMs < this.inferPauseUntilMs) {
-      return this.smoothToTargets(dt);
+    // Vanilla cadence: fixed FPS gate.
+    if (t - this.lastInferT < this.minIntervalMs) {
+      return this.resultToFrame(this.result, dt);
     }
 
-    let didInfer = false;
-
-    if (t - this.lastInferT < this.dynamicMinIntervalMs) {
-      return this.smoothToTargets(dt);
-    }
-
+    // Only infer when the video frame advanced.
     if (videoEl.currentTime === this.lastVideoTime) {
-      return this.smoothToTargets(dt);
+      return this.resultToFrame(this.result, dt);
     }
 
     this.lastVideoTime = videoEl.currentTime;
     this.lastInferT = t;
 
-    let detections: HandLandmarkerResult | null = null;
-    let inferMs = 0;
     try {
       const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
-      detections = (lm as any).detectForVideo(videoEl, t) as HandLandmarkerResult;
+      this.result = (lm as any).detectForVideo(videoEl, t) as HandLandmarkerResult;
       const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
-      inferMs = Math.max(0, t1 - t0);
+      this.lastInferMs = Math.max(0, t1 - t0);
     } catch {
-      const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
-      inferMs = Math.max(0, t1 - nowMs);
-      detections = null;
-    }
-
-    this.lastInferMs = inferMs;
-
-    // MediaPipe can occasionally spike very high (hundreds of ms to seconds). We keep the
-    // raw value for diagnostics, but we must not let rare outliers poison the EMA used for
-    // adaptive throttling, otherwise inference cadence can collapse to ~0.1 FPS.
-    const inferMsForAdaptive = Math.min(inferMs, this.safeMode ? 140 : 180);
-
-    try {
-      const spikeMs = this.safeMode ? 220 : 300;
-      const spikeCooldownMs = this.safeMode ? 2500 : 2000;
-      const spikeRefMs = this.inferMsEma || inferMsForAdaptive;
-      const isSpike = inferMs > spikeMs && inferMs > spikeRefMs * 2.2;
-      if (isSpike && nowMs - this.lastSpikeAtMs > spikeCooldownMs) {
-        this.lastSpikeAtMs = nowMs;
-        this.inferPauseUntilMs = nowMs + (this.safeMode ? 650 : 450);
-      }
-
-      this.inferMsEma = this.inferMsEma
-        ? this.inferMsEma + (inferMsForAdaptive - this.inferMsEma) * 0.12
-        : inferMsForAdaptive;
-
-      // Adaptive throttling: if inference is expensive, reduce how often we run it.
-      // Keeps visuals responsive even if tracking gets heavy.
-      const budgetMs = this.safeMode ? 22 : 32;
-      const slow = this.inferMsEma > budgetMs;
-      const mul = slow ? 1.2 : 1.0;
-      const maxIntervalMs = this.safeMode ? 400 : 250;
-      this.dynamicMinIntervalMs = Math.min(maxIntervalMs, Math.max(this.minIntervalMs, this.inferMsEma * mul));
-
-      if (this.cfg.maxHands > 1) {
-        const dMs = Math.max(0, dt * 1000);
-        if (slow) {
-          this.overBudgetMs += dMs;
-          this.underBudgetMs = Math.max(0, this.underBudgetMs - dMs);
-        } else {
-          this.underBudgetMs += dMs;
-          this.overBudgetMs = Math.max(0, this.overBudgetMs - dMs);
-        }
-
-        // Keep both hands enabled; under sustained load, fall back by increasing inference interval
-        // and applying a small cooldown instead of changing MediaPipe numHands.
-        if (this.overBudgetMs > 900) {
-          this.inferPauseUntilMs = Math.max(this.inferPauseUntilMs, nowMs + (this.safeMode ? 220 : 160));
-          this.dynamicMinIntervalMs = Math.min(
-            maxIntervalMs,
-            Math.max(this.dynamicMinIntervalMs, this.minIntervalMs * (this.safeMode ? 1.8 : 1.5))
-          );
-          this.overBudgetMs = 0;
-          this.underBudgetMs = 0;
-        }
-        if (!this.safeMode && this.underBudgetMs > 3500) {
-          this.dynamicMinIntervalMs = Math.max(this.minIntervalMs, Math.min(this.dynamicMinIntervalMs, this.minIntervalMs * 1.05));
-          this.overBudgetMs = 0;
-          this.underBudgetMs = 0;
-        }
-      }
-
-      this.result = detections;
-      didInfer = true;
-    } catch {
+      this.result = null;
       return { count: 0, hands: [] };
     }
 
-    if (didInfer) {
-      this.updateTargetsFromResult(this.result);
+    return this.resultToFrame(this.result, dt);
+  }
+
+  private resultToFrame(result: HandLandmarkerResult | null, dt: number): HandsFrame {
+    if (!result?.landmarks || result.landmarks.length === 0) return { count: 0, hands: [] };
+
+    const hands: HandPose[] = [];
+
+    for (let i = 0; i < result.landmarks.length; i++) {
+      const lm = result.landmarks[i];
+      if (!lm || lm.length < 21) continue;
+
+      const { label, score } = handedLabelOf(result as any, i);
+      const key = `${label}:${i}`;
+
+      const mx = (idx: number) => (this.cfg.mirrorX ? 1 - lm[idx]!.x : lm[idx]!.x);
+      const my = (idx: number) => lm[idx]!.y;
+
+      const wrist = { x: mx(0), y: my(0) };
+      const center = avg([
+        { x: mx(0), y: my(0) },
+        { x: mx(5), y: my(5) },
+        { x: mx(9), y: my(9) },
+        { x: mx(13), y: my(13) },
+        { x: mx(17), y: my(17) }
+      ]);
+
+      const palmSize = dist(wrist, { x: mx(9), y: my(9) });
+      const pinchDist = dist({ x: mx(4), y: my(4) }, { x: mx(8), y: my(8) });
+      const pinch = clamp01((0.20 - pinchDist) / 0.13);
+
+      const tipAvg =
+        (dist({ x: mx(8), y: my(8) }, wrist) +
+          dist({ x: mx(12), y: my(12) }, wrist) +
+          dist({ x: mx(16), y: my(16) }, wrist) +
+          dist({ x: mx(20), y: my(20) }, wrist)) /
+        4;
+
+      const open = tipAvg > palmSize * 1.75 && pinch < 0.75;
+      const fist = tipAvg < palmSize * 1.18 && pinch < 0.45;
+
+      let landmarks: Vec2[] | undefined;
+      if (!this.safeMode && this.wantLandmarks) {
+        // Allocate per-hand landmark buffer and update it in-place to reduce churn.
+        let buf = this.landmarkBuf.get(key);
+        if (!buf || buf.length !== 21) {
+          buf = new Array(21);
+          for (let j = 0; j < 21; j++) buf[j] = { x: 0, y: 0 };
+          this.landmarkBuf.set(key, buf);
+        }
+        for (let j = 0; j < 21; j++) {
+          const p = lm[j]!;
+          const o = buf[j]!;
+          o.x = this.cfg.mirrorX ? 1 - p.x : p.x;
+          o.y = p.y;
+        }
+        landmarks = buf;
+      } else {
+        landmarks = undefined;
+      }
+
+      const prev = this.prevCenters.get(key);
+      const speed = prev ? clamp01(dist(prev, center) / Math.max(1e-6, dt) / 1.3) : 0;
+      this.prevCenters.set(key, center);
+
+      hands.push({
+        label,
+        score,
+        landmarks,
+        center,
+        wrist,
+        pinch,
+        open,
+        fist,
+        speed
+      });
     }
-    return this.smoothToTargets(dt);
+
+    return { count: hands.length, hands };
   }
 
   private updateTargetsFromResult(result: HandLandmarkerResult | null) {

@@ -3,6 +3,25 @@ import * as Tone from "tone";
 import type { ControlState } from "../control/types";
 import type { MidiEvent } from "../midi/midiInput";
 
+export const AUDIO_ENGINE_VERSION = "techno-demo-2025-12-18-v3";
+
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<{ ok: boolean; value?: T }> {
+  let t: any = null;
+  try {
+    const v = await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        t = setTimeout(() => reject(new Error("timeout")), Math.max(0, ms));
+      })
+    ]);
+    if (t) clearTimeout(t);
+    return { ok: true, value: v };
+  } catch {
+    if (t) clearTimeout(t);
+    return { ok: false };
+  }
+}
+
 function clamp01(v: number) {
   return Math.min(1, Math.max(0, v));
 }
@@ -42,13 +61,14 @@ function ramp01(t: number, t0: number, t1: number) {
 }
 
 export class AudioEngine {
-  private static readonly INTRO_BARS = 24;
-  private static readonly LOOP_BARS = 32;
+  private static readonly INTRO_BARS = 4;
+  private static readonly LOOP_BARS = 8;
   private started = false;
 
   private safeMode = false;
 
   private mode: "performance" | "drone" = "performance";
+  private track: "rave" | "modern" | "melodic" = "rave";
   private gestureOn = false;
   private gestureNote: string | null = null;
   private gestureVoice: "bass" | "stab" | "lead" | "simpleLead" | "pad" | null = null;
@@ -56,7 +76,7 @@ export class AudioEngine {
   private gestureMidi: number | null = null;
   private gestureLastPolyT = 0;
 
-  private raveLeadEnabled = false;
+  private raveLeadEnabled = true;
 
   private droneCMinorNotes: number[] | null = null;
 
@@ -271,11 +291,11 @@ export class AudioEngine {
     const barsSinceStart = (Tone.Transport.seconds - this.introStartSec) / Math.max(1e-3, secPerBar);
 
     this.introKick = 1.0;
-    this.introHat = ramp01(barsSinceStart, 1, 6);
-    this.introBass = ramp01(barsSinceStart, 3, 10);
-    this.introClap = ramp01(barsSinceStart, 5, 12);
-    this.introLead = ramp01(barsSinceStart, 7, 16);
-    this.introPad = ramp01(barsSinceStart, 10, AudioEngine.INTRO_BARS);
+    this.introHat = ramp01(barsSinceStart, 0, 1);
+    this.introBass = ramp01(barsSinceStart, 0.5, 2.0);
+    this.introClap = ramp01(barsSinceStart, 1.0, 2.5);
+    this.introLead = ramp01(barsSinceStart, 1.5, 3.5);
+    this.introPad = ramp01(barsSinceStart, 2.0, AudioEngine.INTRO_BARS);
 
     if (barsSinceStart > AudioEngine.INTRO_BARS) {
       this.introOn = false;
@@ -474,6 +494,7 @@ export class AudioEngine {
     this.simpleLead.portamento = 0.08;
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const ticks = this.getTransportTicksAtTime(time);
       const barNum = Math.floor(ticks / this.transportTicksPerBar);
@@ -481,20 +502,21 @@ export class AudioEngine {
       const beat = Math.floor(inBar / this.transportTicksPerBeat);
       if (!Number.isFinite(barNum) || !Number.isFinite(beat)) return;
 
-      const sec = Math.floor(barNum / 8) % 4;
-      const inBreak = sec === 3;
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
 
-      if (beat === 0) {
-        const v = inBreak ? 0.78 : 0.95;
+      const kickOn = inDrop ? beat === 0 || beat === 2 : beat === 0;
+      if (kickOn) {
+        const v = inBreak ? 0.60 : inBuild ? 0.86 : inDrop ? (beat === 2 ? 0.92 : 0.98) : 0.94;
         this.kick.triggerAttackRelease("C1", "8n", time, v);
         this.beatPulse = 1;
-      } else if (!inBreak && beat === 2 && sec === 2) {
-        // Peak section: occasional extra kick.
-        if (Math.random() < 0.18) this.kick.triggerAttackRelease("C1", "16n", time, 0.38);
       }
     }, "4n");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const g = this.introHat;
       if (g <= 0.001) return;
@@ -510,10 +532,12 @@ export class AudioEngine {
         const sub8 = Math.floor(inBar / ticksPer8);
         if ((sub8 & 1) === 1) return;
       }
-      const sec = Math.floor(barNum / 8) % 4;
-      const inBreak = sec === 3;
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
 
-      const secMul = inBreak ? 0.45 : sec === 2 ? 1.15 : sec === 1 ? 0.95 : 0.85;
+      const secMul = inBreak ? 0.30 : inBuild ? 0.85 : inDrop ? 1.25 : 1.0;
       const dens = Math.max(0.05, this.hatProb) * secMul;
       const a = inBreak && beat === 0 ? 0.55 : 1.0;
       this.hat.triggerAttackRelease("16n", time, 0.22 * g * dens * a);
@@ -522,8 +546,9 @@ export class AudioEngine {
       }
     }, "8n");
 
-    const bassNotes = ["C1", "C1", "G0", "C1", "D#1", "C1", "G0", "A#0"];
+    const bassNotes = ["C1", "C1", "C1", "G0", "D#1", "C1", "G0", "A#0"];
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const g = this.introBass;
       if (g <= 0.001) return;
@@ -538,26 +563,34 @@ export class AudioEngine {
         if ((sub8 & 1) === 1) return;
       }
 
-      const sec = Math.floor(barNum / 8) % 4;
-      const inBreak = sec === 3;
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
 
       const step = this.bassStep++ % bassNotes.length;
-      const secMul = inBreak ? 0.25 : sec === 2 ? 1.15 : sec === 1 ? 0.95 : 0.85;
+      const secMul = inBreak ? 0.18 : inBuild ? 0.85 : inDrop ? 1.25 : 1.0;
       const dens = this.bassProb * secMul;
-      const play = dens >= 0.60 ? true : step % 2 === 0;
+      const play = dens >= 0.55 ? true : step % 2 === 0;
       if (!play) return;
       this.bass.triggerAttackRelease(bassNotes[step]!, "16n", time, 0.55 * g * (inBreak ? 0.65 : 1));
     }, "8n");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const ticks = this.getTransportTicksAtTime(time);
       const barNum = Math.floor(ticks / this.transportTicksPerBar);
       if (!Number.isFinite(barNum)) return;
       const g = this.introLead;
       if (g <= 0.001) return;
-      if (barNum % 2 === 1) {
-        this.stab.triggerAttackRelease(["C4", "G4"], "8n", time, 0.18 * g);
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
+      if (inDrop && barNum % 2 === 1) {
+        this.stab.triggerAttackRelease(["C4", "G4", "A#4"], "8n", time, 0.22 * g);
+      } else if (inBuild && barNum % 2 === 0) {
+        this.stab.triggerAttackRelease(["C4", "G4"], "8n", time, 0.16 * g);
       }
     }, "2n");
 
@@ -570,10 +603,12 @@ export class AudioEngine {
     const slideB = [0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0];
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const ticks = this.getTransportTicksAtTime(time);
       const barNum = Math.floor(ticks / this.transportTicksPerBar);
-      const isA = barNum % 16 < 8;
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const isA = loopBar < 4;
       const patt = isA ? pattA : pattB;
       const acc = isA ? accentA : accentB;
       const sld = isA ? slideA : slideB;
@@ -587,9 +622,10 @@ export class AudioEngine {
 
       if (this.safeMode && (step & 1) === 1) return;
 
-      const sec = Math.floor(barNum / 8) % 4;
-      const inBreak = sec === 3;
-      const densMul = inBreak ? 0.25 : sec === 2 ? 1.25 : sec === 1 ? 0.95 : 0.80;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
+      const densMul = inBreak ? 0.10 : inBuild ? 0.75 : inDrop ? 1.25 : 0.95;
       if (Math.random() > this.leadDensity * densMul) return;
 
       const g = this.introLead;
@@ -611,26 +647,36 @@ export class AudioEngine {
 
     const leadMel = ["E4", "G4", "A4", "G4", "D4", "E4", "B3", "D4"];
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const g = this.introLead;
       if (g <= 0.001) return;
+      const ticks = this.getTransportTicksAtTime(time);
+      const barNum = Math.floor(ticks / this.transportTicksPerBar);
+      if (!Number.isFinite(barNum)) return;
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      if (loopBar < 6) return;
       const step = this.simpleLeadStep++ % leadMel.length;
       const note = leadMel[step]!;
       this.simpleLead.triggerAttackRelease(note, "4n", time, 0.16 * g);
     }, "2n", "0");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const ticks = this.getTransportTicksAtTime(time);
       const barNum = Math.floor(ticks / this.transportTicksPerBar);
       if (!Number.isFinite(barNum)) return;
       const g = this.introPad;
       if (g <= 0.001) return;
-      const chord = barNum % 4 < 2 ? ["C4", "G4", "A#4", "D5"] : ["A#3", "F4", "G4", "C5"];
-      this.pad.triggerAttackRelease(chord, "1m", time, 0.09 * g);
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      if (loopBar !== 0 && loopBar !== 4) return;
+      const chord = loopBar === 0 ? ["C4", "G4", "A#4", "D5"] : ["A#3", "F4", "G4", "C5"];
+      this.pad.triggerAttackRelease(chord, "1m", time, 0.075 * g);
     }, "2m", "0");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const g = this.introClap;
       if (g <= 0.001) return;
@@ -638,6 +684,7 @@ export class AudioEngine {
     }, "2n", "4n");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (this.genEnabled) return;
       const g = Math.max(this.introClap, this.introHat);
       if (g <= 0.001) return;
@@ -660,6 +707,141 @@ export class AudioEngine {
     }, "16n");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "modern") return;
+      if (this.genEnabled) return;
+      const ticks = this.getTransportTicksAtTime(time);
+      const barNum = Math.floor(ticks / this.transportTicksPerBar);
+      const inBar = ticks - barNum * this.transportTicksPerBar;
+      const beat = Math.floor(inBar / this.transportTicksPerBeat);
+      const inBeat = inBar - beat * this.transportTicksPerBeat;
+      const sixteenth = Math.floor(inBeat / this.transportTicksPer16);
+      if (!Number.isFinite(barNum) || !Number.isFinite(beat) || !Number.isFinite(sixteenth)) return;
+
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
+
+      const gK = this.introKick;
+      const gH = this.introHat;
+      const gC = this.introClap;
+      const gB = this.introBass;
+      const gL = this.introLead;
+
+      const step16 = ((beat * 4 + sixteenth) | 0) % 16;
+
+      const kick = (step16 === 0 || step16 === 6 || (inDrop && step16 === 10)) && !inBreak;
+      if (kick && gK > 0.001) {
+        const v = inBuild ? 0.72 : inDrop ? 0.92 : 0.82;
+        this.kick.triggerAttackRelease("C1", "16n", time, v * gK);
+        this.beatPulse = 1;
+      }
+
+      const backbeat = step16 === 4 || step16 === 12;
+      if (backbeat && gC > 0.001) {
+        const v = (inBreak ? 0.35 : 0.55) * gC;
+        this.clap.triggerAttackRelease("16n", time, v);
+        this.snare.triggerAttackRelease("16n", time + Tone.Time("64n").toSeconds(), v * 0.35);
+      }
+
+      if (gH > 0.001) {
+        const hatOn = step16 === 2 || step16 === 7 || step16 === 10 || step16 === 15;
+        if (hatOn && !inBreak) {
+          const v = (inBuild ? 0.13 : 0.16) * gH * (inDrop ? 1.15 : 1.0);
+          const t = step16 === 7 || step16 === 15 ? time + Tone.Time("64n").toSeconds() : time;
+          this.hat.triggerAttackRelease("32n", t, v);
+        }
+      }
+
+      if (gB > 0.001 && !inBreak) {
+        const bassOn = step16 === 2 || step16 === 9 || (inDrop && step16 === 14);
+        if (bassOn) {
+          const note = step16 === 9 ? "A#0" : "C1";
+          const v = (inBuild ? 0.22 : 0.30) * gB;
+          this.bass.triggerAttackRelease(note, "16n", time, v);
+        }
+      }
+
+      if (gL > 0.001 && (inBuild || inDrop) && step16 === 8 && !inBreak) {
+        const chord = inDrop ? (["C4", "G4", "A#4"] as any) : (["C4", "G4"] as any);
+        this.stab.triggerAttackRelease(chord, "8n" as any, time, (inDrop ? 0.18 : 0.13) * gL);
+      }
+    }, "16n");
+
+    Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "melodic") return;
+      if (this.genEnabled) return;
+
+      const ticks = this.getTransportTicksAtTime(time);
+      const barNum = Math.floor(ticks / this.transportTicksPerBar);
+      const inBar = ticks - barNum * this.transportTicksPerBar;
+      const beat = Math.floor(inBar / this.transportTicksPerBeat);
+      const inBeat = inBar - beat * this.transportTicksPerBeat;
+      const sixteenth = Math.floor(inBeat / this.transportTicksPer16);
+      if (!Number.isFinite(barNum) || !Number.isFinite(beat) || !Number.isFinite(sixteenth)) return;
+
+      const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
+      const inBreak = loopBar === 4;
+      const inBuild = loopBar === 5;
+      const inDrop = loopBar >= 6;
+
+      const gK = this.introKick;
+      const gH = this.introHat;
+      const gB = this.introBass;
+      const gL = this.introLead;
+      const gP = this.introPad;
+
+      const step16 = ((beat * 4 + sixteenth) | 0) % 16;
+
+      // Keep a simple pulse: kick on 1 (and on 3 in drop), lighter hats.
+      const kickOn = inDrop ? step16 === 0 || step16 === 8 : step16 === 0;
+      if (kickOn && gK > 0.001 && !inBreak) {
+        this.kick.triggerAttackRelease("C1", "8n", time, (inDrop ? 0.82 : 0.72) * gK);
+        this.beatPulse = 1;
+      }
+
+      if (gH > 0.001) {
+        const hatOn = step16 === 4 || step16 === 12 || (inDrop && (step16 === 2 || step16 === 10));
+        if (hatOn && !inBreak) {
+          const v = (inBuild ? 0.12 : 0.16) * gH;
+          this.hat.triggerAttackRelease("16n", time, v);
+        }
+      }
+
+      if (gB > 0.001 && !inBreak) {
+        const bassOn = step16 === 2 || step16 === 6 || (inDrop && step16 === 14);
+        if (bassOn) {
+          const note = step16 === 6 ? "G0" : "C1";
+          this.bass.triggerAttackRelease(note, "16n", time, (inBuild ? 0.22 : 0.28) * gB);
+        }
+      }
+
+      // Melody: simpleLead plays a repeating 8-step motif, gated by section.
+      if (sixteenth === 0 && !inBreak && gL > 0.001) {
+        const motif = ["E4", "G4", "A4", "G4", "D4", "E4", "C4", "D4"];
+        const idx = ((barNum * 4 + beat) | 0) % motif.length;
+        const note = motif[idx]!;
+        const vel = (inBuild ? 0.10 : inDrop ? 0.16 : 0.12) * gL;
+        this.simpleLead.triggerAttackRelease(note, "8n" as any, time, vel);
+      }
+
+      // Chords: pad on bar start, stab in build/drop.
+      if (sixteenth === 0 && beat === 0 && gP > 0.001) {
+        const chord = loopBar < 4 ? (["C4", "G4", "A#4"] as any) : (["A#3", "F4", "G4"] as any);
+        const v = (inBreak ? 0.02 : inDrop ? 0.06 : 0.045) * gP;
+        this.pad.triggerAttackRelease(chord, "1m" as any, time, v);
+      }
+
+      if (inBuild && step16 === 12 && gL > 0.001) {
+        this.stab.triggerAttackRelease(["C4", "G4"] as any, "8n" as any, time, 0.10 * gL);
+      }
+      if (inDrop && step16 === 8 && gL > 0.001) {
+        this.stab.triggerAttackRelease(["C4", "G4", "A#4"] as any, "8n" as any, time, 0.14 * gL);
+      }
+    }, "16n");
+
+    Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (!this.genEnabled) return;
 
       const ticks = this.getTransportTicksAtTime(time);
@@ -744,6 +926,7 @@ export class AudioEngine {
     }, "16n");
 
     Tone.Transport.scheduleRepeat((time: number) => {
+      if (this.track !== "rave") return;
       if (!this.genEnabled) return;
       const ticks = this.getTransportTicksAtTime(time);
       const barNum = Math.floor(ticks / this.transportTicksPerBar);
@@ -805,12 +988,21 @@ export class AudioEngine {
     return this.mode;
   }
 
+  setTrack(track: "rave" | "modern" | "melodic") {
+    this.track = track;
+  }
+
+  getTrack() {
+    return this.track;
+  }
+
   async start() {
     if (this.started) return;
     await Tone.start();
-    await this.loadMidiSamples();
-    await Tone.loaded();
-    await this.reverb.ready;
+    void this.loadMidiSamples();
+    // Never block entering performance on network / asset stalls.
+    await withTimeout(Tone.loaded(), 2200);
+    await withTimeout(this.reverb.ready, 1800);
 
     try {
       this.droneOsc.start();
@@ -1243,18 +1435,27 @@ export class AudioEngine {
 
     if (this.mode === "drone") {
       const hands = control.hands?.hands ?? [];
-      const right = hands.find((h) => h.label === "Right") ?? null;
-      const left = hands.find((h) => h.label === "Left") ?? null;
+      const hs = hands
+        .slice(0)
+        .sort((a, b) => {
+          const ax = a?.center?.x ?? 0.5;
+          const bx = b?.center?.x ?? 0.5;
+          return ax - bx;
+        });
 
-      const rPinch = clamp01(right?.pinch ?? control.rightPinch);
-      const lPinch = clamp01(left?.pinch ?? control.leftPinch);
+      const left = hs.length >= 1 ? hs[0]! : null;
+      const right = hs.length >= 2 ? hs[1]! : null;
+
+      const sep = right && left ? (right.center.x ?? 0.5) - (left.center.x ?? 0.5) : 0;
+      const twoHands = Boolean(right && left && sep > 0.12);
+      const rPinch = clamp01(twoHands ? right?.pinch ?? 0 : 0);
+      const lPinch = clamp01(left?.pinch ?? 0);
       const guitarOn = rPinch > 0.12;
-      const bassOn = lPinch > 0.12;
+      const bassOn = lPinch > 0.06;
       const now = Tone.now();
 
       // Timbre/brightness (0=darker, 1=brighter)
-      const ry = clamp01(right?.center?.y ?? control.rightY);
-      const bright = clamp01(1 - ry);
+      const bright = clamp01(twoHands && right ? 1 - right.center.y : 0.5);
       this.droneFilter.frequency.rampTo(lerp(90, 900, bright), 0.10);
 
       this.droneDrive.distortion = lerp(0.75, 0.99, rPinch);
@@ -1286,8 +1487,8 @@ export class AudioEngine {
       if (!guitarOn) this.droneGateOn = false;
 
       // Pitch: very narrow low ranges.
-      const rx = clamp01(right?.center?.x ?? control.rightX);
-      const lx = clamp01(left?.center?.x ?? control.leftX);
+      const rx = clamp01(twoHands && right ? right.center.x : 0.5);
+      const lx = clamp01(left ? left.center.x : 0.5);
 
       // Right hand: "guitar" layer (still low, but above the sub bass).
       const guitarMidi = this.quantizeCMinorInRange(rx, 26, 38, "low");
@@ -1310,7 +1511,7 @@ export class AudioEngine {
 
       // Gain: right pinch is the main gate, left pinch adds/subs the bass layer.
       const guitarVel = clamp01(0.02 + rPinch * 0.55);
-      const bassVel = clamp01(0.01 + lPinch * 0.70);
+      const bassVel = clamp01((bassOn ? 0.06 : 0.01) + lPinch * 0.85);
 
       try {
         this.droneGain.gain.rampTo(guitarOn ? guitarVel : 0, 0.03);
@@ -1359,15 +1560,16 @@ export class AudioEngine {
     const loopBar = Math.max(0, barsSinceStart - AudioEngine.INTRO_BARS);
     const loopPos = ((loopBar % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
 
-    // Sections (shorter loop): 0..7 groove A, 8..15 groove B, 16..19 break, 20..23 build, 24..31 drop/peak.
-    const inBreak = loopPos >= 16 && loopPos < 20;
-    const inBuild = loopPos >= 20 && loopPos < 24;
-    const inDrop = loopPos >= 24;
+    // Sections (8-bar loop):
+    // 0..3 groove, 4 break, 5 build, 6..7 drop/peak.
+    const inBreak = loopPos >= 4 && loopPos < 5;
+    const inBuild = loopPos >= 5 && loopPos < 6;
+    const inDrop = loopPos >= 6;
 
     // Intro caps: start very filtered/dry, then open.
     const introOpen = clamp01(barsSinceStart / AudioEngine.INTRO_BARS);
-    const introFx = ramp01(barsSinceStart, 6, AudioEngine.INTRO_BARS);
-    const introEnergy = ramp01(barsSinceStart, 4, AudioEngine.INTRO_BARS);
+    const introFx = ramp01(barsSinceStart, 0.75, AudioEngine.INTRO_BARS);
+    const introEnergy = ramp01(barsSinceStart, 0.5, AudioEngine.INTRO_BARS);
 
     const sectionEnergy = inBreak ? 0.45 : inBuild ? 0.85 : inDrop ? 1.15 : 1.0;
     const sectionPerc = inBreak ? 0.35 : inBuild ? 0.75 : inDrop ? 1.10 : 1.0;

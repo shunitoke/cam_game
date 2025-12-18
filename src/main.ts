@@ -110,8 +110,26 @@ async function main() {
   hud.style.color = "rgba(255,255,255,0.92)";
   hud.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
   hud.style.pointerEvents = "none";
-  hud.style.whiteSpace = "pre";
-  hud.textContent = "HUD";
+  hud.style.whiteSpace = "normal";
+  hud.style.width = "420px";
+  hud.style.maxWidth = "calc(100vw - 20px)";
+
+  const hudText = el("div");
+  hudText.style.whiteSpace = "pre";
+  hudText.textContent = "HUD";
+
+  const hudMeter = el("canvas") as HTMLCanvasElement;
+  hudMeter.width = 420;
+  hudMeter.height = 56;
+  hudMeter.style.display = "block";
+  hudMeter.style.marginTop = "6px";
+  hudMeter.style.width = "100%";
+  hudMeter.style.height = "56px";
+
+  const hudMeterCtx = hudMeter.getContext("2d");
+
+  hud.appendChild(hudText);
+  hud.appendChild(hudMeter);
 
   const hints = el("details", "hints");
   const hintsSummary = el("summary");
@@ -416,6 +434,7 @@ async function main() {
   overlay.setMaxDpr(1.25);
   let audio: AudioEngine | null = null;
   let audioMode: "performance" | "drone" = "performance";
+  let audioTrack: "rave" | "modern" | "melodic" = "rave";
   const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
   tracker.setWantLandmarks(overlayOn);
   const midi = new MidiInput();
@@ -728,6 +747,16 @@ async function main() {
 
       const control = controlBus.update({ t, dt, hands });
 
+      // Render the HUD meter at full rAF speed (independent from the throttled HUD text).
+      // Uses lastAudioViz which is already throttled upstream.
+      if (hudOn && audioVizOn) {
+        try {
+          renderHudMeter();
+        } catch {
+          // ignore
+        }
+      }
+
     const midiT0 = performance.now();
     const midiStatus = midi.getStatus();
     if (!midiStatus.supported) {
@@ -967,7 +996,7 @@ async function main() {
     const infLastMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
     const infStr = !camInferOn ? "off" : infPauseMs > 0 ? `cool ${Math.round(infPauseMs)}ms` : `on ${Math.round(infLastMs)}ms`;
 
-    hud.textContent =
+    hudText.textContent =
       `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
       `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}` +
       `\nheap ${heapStr}` +
@@ -977,6 +1006,119 @@ async function main() {
       `\nerr ${lastErr ?? "-"}` +
       `\nrej ${lastRej ?? "-"}` +
       `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;
+  };
+
+  const renderHudMeter = () => {
+    if (!hudOn) return;
+    if (!audioVizOn) return;
+    if (!hudMeterCtx) return;
+
+    const cssW = Math.max(260, Math.min(720, Math.floor(hud.getBoundingClientRect().width)));
+    const cssH = 56;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
+    if (hudMeter.width !== w || hudMeter.height !== h) {
+      hudMeter.width = w;
+      hudMeter.height = h;
+    }
+
+    const ctx = hudMeterCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pack: any = lastAudioViz as any;
+    const fft: Float32Array | undefined = pack?.fft;
+    const wave: Float32Array | undefined =
+      pack?.kick ||
+      pack?.bass ||
+      pack?.hat ||
+      pack?.lead ||
+      pack?.simpleLead ||
+      pack?.pad ||
+      pack?.stab;
+
+    const padL = 0;
+    const padT = 0;
+    const ww = w - padL;
+    const hh = h - padT;
+    const midY = padT + hh * 0.52;
+
+    if (fft && fft.length >= 8) {
+      const startBin = 1;
+      const endBin = fft.length;
+      const span = Math.max(1, endBin - startBin);
+
+      const bars = Math.max(32, Math.min(96, Math.floor(ww / Math.max(3, 4.0 * dpr))));
+      const baseY = padT + hh * 0.55;
+
+      const lnA = Math.log(Math.max(2, startBin));
+      const lnB = Math.log(Math.max(startBin + 1, endBin));
+      const lnSpan = Math.max(1e-6, lnB - lnA);
+
+      // Compute per-band peak dB (max pooling) using log-spaced bins.
+      let maxDb = -Infinity;
+      const bandDb = new Array<number>(bars);
+      for (let bi = 0; bi < bars; bi++) {
+        const t0 = bi / bars;
+        const t1 = (bi + 1) / bars;
+
+        const i0 = startBin + Math.floor(Math.exp(lnA + t0 * lnSpan));
+        const i1 = startBin + Math.floor(Math.exp(lnA + t1 * lnSpan));
+        const a = Math.max(startBin, Math.min(endBin - 1, i0));
+        const b = Math.max(a + 1, Math.min(endBin, i1));
+
+        let peak = -Infinity;
+        for (let k = a; k < b; k++) {
+          const db = fft[k] ?? -120;
+          if (db > peak) peak = db;
+        }
+
+        // Gentle HF tilt so mids/highs are readable without dominating.
+        const centerT = (bi + 0.5) / bars;
+        const tiltDb = centerT * 14;
+        const adj = peak + tiltDb;
+        bandDb[bi] = adj;
+        if (adj > maxDb) maxDb = adj;
+      }
+
+      if (!Number.isFinite(maxDb)) maxDb = -60;
+      const topDb = Math.min(-10, maxDb - 4);
+      const minDb = Math.max(-120, topDb - 80);
+      const invRange = 1 / Math.max(1e-6, topDb - minDb);
+
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.strokeStyle = "rgba(255,255,255,0.65)";
+
+      for (let bi = 0; bi < bars; bi++) {
+        const t = bi / Math.max(1, bars - 1);
+        let m = (bandDb[bi]! - minDb) * invRange;
+        m = Math.min(1, Math.max(0, m));
+        m = Math.pow(m, 0.75);
+
+        const x = padL + t * ww;
+        const y = baseY - m * (hh * 0.52);
+        ctx.beginPath();
+        ctx.moveTo(x, baseY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      }
+    }
+
+    if (wave && wave.length >= 8) {
+      const n = Math.min(128, wave.length);
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.strokeStyle = "rgba(0,255,220,0.75)";
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const v = Math.max(-1, Math.min(1, wave[i] ?? 0));
+        const x = padL + (i / Math.max(1, n - 1)) * ww;
+        const y = midY - v * (hh * 0.36);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
   };
 
   // Update HUD even if requestAnimationFrame gets throttled or stops.
@@ -1041,16 +1183,28 @@ async function main() {
     audSpan.textContent = "starting";
     try {
       if (!audio) {
-        const mod = await import("./music/audioEngine");
+        const mod: any = await import("./music/audioEngine");
         audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+        if (typeof mod?.AUDIO_ENGINE_VERSION === "string") {
+          audSpan.title = `AudioEngine: ${mod.AUDIO_ENGINE_VERSION}`;
+        }
       }
-      audio.setMode(audioMode);
+
+      const a = audio;
+      if (!a) throw new Error("AudioEngine not initialized");
+
+      {
+        const picks: Array<"rave" | "modern" | "melodic"> = ["rave", "modern", "melodic"];
+        audioTrack = picks[Math.floor(Math.random() * picks.length)] ?? "rave";
+      }
+      a.setTrack(audioTrack);
+      a.setMode(audioMode);
 
       try {
-        await audio.start();
+        await a.start();
       } catch (e) {
         await new Promise((r) => setTimeout(r, 250));
-        await audio.start();
+        await a.start();
       }
 
       audSpan.textContent = "on";
@@ -1209,6 +1363,7 @@ async function main() {
         void audio.stop();
         audSpan.textContent = "off";
       } else {
+        audio.setTrack(audioTrack);
         audio.setMode(audioMode);
         audio.setSafeMode(safeMode);
         void audio.start();
