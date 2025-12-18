@@ -25,6 +25,7 @@ type DroneParamsMsg = {
   guitarFreq: number;
   guitarPluck: number;
   guitarBright: number;
+  guitarGate: number;
 };
 
 type DroneGateMsg = { type: "gate"; gate: number };
@@ -111,8 +112,17 @@ class DroneProcessor extends AudioWorkletProcessor {
   private guitarLen = 0;
   private guitarLp = 0;
   private guitarHp = 0;
+  private guitarPrev = 0;
   private guitarFreq = 196;
   private guitarBright = 0.6;
+
+  private guitarGate = 0;
+  private guitarEnv = 0;
+  private guitarPluckEnv = 0;
+  private guitarOscPhase = 0;
+  private guitarCabLP = 0;
+  private guitarCabNotch = 0;
+  private guitarLow = 0;
 
   constructor() {
     super();
@@ -124,7 +134,7 @@ class DroneProcessor extends AudioWorkletProcessor {
       if (m.type === "params") {
         this.mode = m.mode === "performance" ? "performance" : "drone";
         this.freq = clamp(m.freq, 20, 2000);
-        this.targetGain = clamp(m.gain, 0, 1.5);
+        this.targetGain = clamp(m.gain, 0, 1.0);
         this.cutoff = clamp(m.cutoff, 40, 18000);
         this.drive = clamp(m.drive, 0, 2.5);
         this.lfoHz = clamp(m.lfoHz, 0, 12);
@@ -147,10 +157,12 @@ class DroneProcessor extends AudioWorkletProcessor {
 
         this.guitarFreq = clamp(m.guitarFreq, 40, 900);
         this.guitarBright = clamp(m.guitarBright, 0, 1);
+        this.guitarGate = clamp(m.guitarGate, 0, 1);
 
         if (m.guitarPluck > 0.5) {
           // will be handled in process loop (ensures buffer exists with correct sr)
           this.guitarIdx = -1;
+          this.guitarPluckEnv = 1;
         }
       }
 
@@ -197,6 +209,11 @@ class DroneProcessor extends AudioWorkletProcessor {
     const pulseRel = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.pulseDecaySec)));
     const tickRel = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.tickDecaySec)));
 
+    const guitarAtk = 1 - Math.exp(-1 / (sr * 0.020));
+    const guitarRel = 1 - Math.exp(-1 / (sr * 0.120));
+
+    const pluckRel = 1 - Math.exp(-1 / (sr * 0.055));
+
     // 16th note stepper (4 steps per beat)
     const secPerBeat = 60 / Math.max(1e-6, this.bpm);
     const secPerStep = secPerBeat / 4;
@@ -210,6 +227,14 @@ class DroneProcessor extends AudioWorkletProcessor {
       // additional envelope for smoother perception
       const ea = gateTarget > this.env ? atk : rel;
       this.env = this.env + (gateTarget - this.env) * ea;
+
+      // Guitar envelope (sustained while pinched)
+      const gTarget = this.guitarGate;
+      const ga = gTarget > this.guitarEnv ? guitarAtk : guitarRel;
+      this.guitarEnv = this.guitarEnv + (gTarget - this.guitarEnv) * ga;
+
+      // Pluck envelope (short transient layer, should be silent if no pluck triggers)
+      this.guitarPluckEnv = this.guitarPluckEnv + (0 - this.guitarPluckEnv) * pluckRel;
 
       // step clock
       this.stepPhase += stepInc;
@@ -382,11 +407,65 @@ class DroneProcessor extends AudioWorkletProcessor {
         this.guitarIdx = next >= this.guitarLen ? 0 : next;
 
         // highpass-ish output to avoid too much sub rumble
+        // DC blocker: yHP[n] = a*(yHP[n-1] + x[n] - x[n-1])
         const hpA = 0.995;
-        this.guitarHp = hpA * (this.guitarHp + y - this.guitarHp);
+        this.guitarHp = hpA * (this.guitarHp + y - this.guitarPrev);
+        this.guitarPrev = y;
 
-        const gOut = (y - this.guitarHp) * (0.55 + 0.25 * this.guitarBright);
-        x += gOut * (0.55 + 0.35 * this.env);
+        const gOut = this.guitarHp;
+        // Transient only: should NOT be heard as "pluck" unless explicitly triggered.
+        const pe = this.guitarPluckEnv;
+        const gGain = (0.45 + 0.35 * this.guitarBright) * pe;
+        x += gOut * gGain;
+      }
+
+      // DRONE sustained "amp" guitar (Sunn O))) vibe): drones while right pinch held
+      if (this.mode === "drone" && this.guitarEnv > 1e-4) {
+        const f0 = this.guitarFreq;
+        this.guitarOscPhase += f0 * invSr;
+        if (this.guitarOscPhase >= 1) this.guitarOscPhase -= 1;
+
+        // Thick saw-ish + sub harmonic
+        const saw = 2 * this.guitarOscPhase - 1;
+        const sub = Math.sin(this.guitarOscPhase * Math.PI); // 1/2 harmonic
+        const raw = 0.72 * saw + 0.28 * sub;
+
+        // Sustain envelope
+        const env = this.guitarEnv;
+
+        // Two-stage fuzz amp stack
+        // Stage 1: preamp drive (brightness = more bite)
+        const pre = 2.8 + 7.5 * (0.35 + 0.65 * this.guitarGate) + 2.2 * this.drive;
+        let amp = Math.tanh(raw * pre);
+
+        // Low-end boost around ~100Hz (crude one-pole low shelf feel)
+        // Extract a low band, then mix it back in.
+        const lowA = 0.014; // ~100Hz @ 48k (rough)
+        this.guitarLow = this.guitarLow + (amp - this.guitarLow) * lowA;
+        const lowBoost = 0.65 + 0.85 * (0.35 + 0.65 * this.sub);
+        amp = amp + this.guitarLow * lowBoost;
+
+        // Stage 2: power amp / fuzz clamp
+        const post = 2.2 + 5.0 * (0.25 + 0.75 * this.guitarGate);
+        amp = Math.tanh(amp * post);
+        amp = Math.tanh(amp * (2.4 + 3.0 * (1 - this.guitarBright)));
+
+        // Cabinet: tighter lowpass ~3-4k (brightness opens a bit)
+        const cab = 0.10 + 0.12 * this.guitarBright; // higher = brighter
+        this.guitarCabLP = this.guitarCabLP + (amp - this.guitarCabLP) * cab;
+        let cabbed = this.guitarCabLP;
+
+        // crude notch around ~900Hz (honky removal)
+        const notchA = 0.07;
+        this.guitarCabNotch = this.guitarCabNotch + (cabbed - this.guitarCabNotch) * notchA;
+        cabbed = cabbed - (cabbed - this.guitarCabNotch) * 0.50;
+
+        // Keep both original and amplification "true": blend raw-ish and cabbed fuzz.
+        const rawMix = 0.10 + 0.22 * this.guitarBright;
+        const ampMix = 1.0 - rawMix;
+        const out = raw * rawMix + cabbed * ampMix;
+
+        x += out * env * (0.18 + 0.36 * this.sub);
       }
 
       // output gain

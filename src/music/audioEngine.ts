@@ -90,7 +90,7 @@ export class AudioEngine {
   private lastParamUpdateT = 0;
   private paramUpdateIntervalMs = 50;
 
-  private master = new Tone.Gain(1.25);
+  private master = new Tone.Gain(0.6);
   private limiter = new Tone.Limiter(-0.5);
 
   private drive = new Tone.Distortion(0.1);
@@ -320,7 +320,7 @@ export class AudioEngine {
   private midiMod = 0;
   private midiRev = 0;
 
-  private midiSampleGain = new Tone.Gain(1.15);
+  private midiSampleGain = new Tone.Gain(0.9);
   private midiSampleFilter = new Tone.Filter({ type: "lowpass", frequency: 9000, Q: 0.65 });
   private midiCrush = new Tone.BitCrusher(8);
   private midiCrushAmount = 0;
@@ -1707,7 +1707,7 @@ export class AudioEngine {
       this.droneBeatNextT = now + dt;
     }
 
-    const targetMaster = control.kill ? 0.0001 : 0.65;
+    const targetMaster = control.kill ? 0.0001 : 0.5;
     this.master.gain.rampTo(targetMaster, 0.06);
   }
 
@@ -1851,7 +1851,7 @@ export class AudioEngine {
     this.simpleLead.volume.value = lerp(-26, -16, clamp01(build));
     this.pad.volume.value = lerp(-30, -18, clamp01(build));
 
-    const targetMaster = control.kill ? 0.0001 : 0.9;
+    const targetMaster = control.kill ? 0.0001 : 0.65;
     this.master.gain.rampTo(targetMaster, 0.06);
   }
 

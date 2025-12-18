@@ -87,6 +87,10 @@ async function main() {
   overlayBtn.disabled = true;
   let overlayOn = true;
 
+  const autoplayBtn = el("button");
+  autoplayBtn.title = "Automatically switch scenes (RAVE mode only)";
+  autoplayBtn.disabled = true;
+
   const sceneBadge = el("span", "badge");
   sceneBadge.textContent = "Scene: Particles";
 
@@ -107,6 +111,8 @@ async function main() {
   hud.style.whiteSpace = "normal";
   hud.style.width = "420px";
   hud.style.maxWidth = "calc(100vw - 20px)";
+  hud.style.boxSizing = "border-box";
+  hud.style.overflow = "hidden";
 
   const gestureHint = el("div");
   gestureHint.style.padding = "8px 10px";
@@ -115,13 +121,34 @@ async function main() {
   gestureHint.style.border = "1px solid rgba(120, 255, 230, 0.18)";
   gestureHint.style.color = "rgba(223, 253, 245, 0.92)";
   gestureHint.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-  gestureHint.style.whiteSpace = "pre";
+  gestureHint.style.whiteSpace = "pre-wrap";
+  gestureHint.style.overflowWrap = "anywhere";
+  (gestureHint.style as any).wordBreak = "break-word";
   gestureHint.style.opacity = "0.92";
   gestureHint.textContent = "Gestures\n- Pinch: hold\n- Move: change\n";
 
   const hudText = el("div");
-  hudText.style.whiteSpace = "pre";
+  hudText.style.whiteSpace = "pre-wrap";
+  hudText.style.overflowWrap = "anywhere";
+  (hudText.style as any).wordBreak = "break-word";
   hudText.textContent = "HUD";
+
+  const handsPrompt = el("div");
+  handsPrompt.textContent = "Show your hands to play";
+  handsPrompt.style.position = "fixed";
+  handsPrompt.style.left = "50%";
+  handsPrompt.style.top = "14%";
+  handsPrompt.style.transform = "translateX(-50%)";
+  handsPrompt.style.padding = "10px 14px";
+  handsPrompt.style.borderRadius = "10px";
+  handsPrompt.style.background = "rgba(0,0,0,0.55)";
+  handsPrompt.style.color = "#fff";
+  handsPrompt.style.font = "600 14px/1.1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif";
+  handsPrompt.style.letterSpacing = "0.2px";
+  handsPrompt.style.zIndex = "9999";
+  handsPrompt.style.pointerEvents = "none";
+  handsPrompt.style.display = "none";
+  document.body.appendChild(handsPrompt);
 
   const hudMeter = el("canvas") as HTMLCanvasElement;
   hudMeter.width = 420;
@@ -140,23 +167,20 @@ async function main() {
     if (mode === "drone") {
       gestureHint.textContent =
         "Gestures (DRONE)\n" +
-        "- A/W/S/E... keys: pitch\n" +
-        "- 🤏🫲 Left pinch: gate / level\n" +
-        "- 🫲 X: BPM (slow pulse)\n" +
-        "- 🫲 Y: envelope (atk/rel)\n" +
-        "- 🫲🫱 Both hands: build = more pulse\n" +
-        "- 🫱 X: guitar pitch\n" +
-        "- 🤏🫱 Right pinch: pluck (guitar) + ticks\n" +
-        "- 🫱 Y: brightness\n";
+        "- Keys: pitch\n" +
+        "- Left (BASS): pinch = level, X = pitch, Y = tone\n" +
+        "- Right (GUITAR): pinch = level, X = pitch, Y = brightness\n";
     } else {
       gestureHint.textContent =
         "Gestures (RAVE)\n" +
-        "- 🫲 X: tempo (BPM)\n" +
-        "- 🫱 Y: drum filter (LPF)\n" +
-        "- 🤏🫱 Right pinch: hat density / open hat\n" +
-        "- 🫲🫱 Both hands: build = more rumble\n";
+        "- Left X: tempo\n" +
+        "- Right Y: drum tone\n" +
+        "- Right pinch: hats\n" +
+        "- Both hands: build\n";
     }
   };
+
+  let noHandsSinceMs: number | null = null;
 
   const hints = el("details", "hints");
   const hintsSummary = el("summary");
@@ -176,6 +200,7 @@ async function main() {
   controlsRow.appendChild(sceneBadge);
 
   togglesRow.appendChild(overlayBtn);
+  togglesRow.appendChild(autoplayBtn);
 
   panel.appendChild(controlsRow);
   panel.appendChild(togglesRow);
@@ -230,68 +255,79 @@ async function main() {
     particles: {
       title: "Particles",
       items: [
-        ["Left hand", "mix / flow"],
-        ["Right hand", "space / FX"],
-        ["Right pinch", "intensity"],
-        ["Build", "more motion + density"],
-        ["MIDI note", "burst"],
-        ["R", "reset scene"]
+        ["Left", "flow"],
+        ["Right", "space"],
+        ["Pinch", "boost"],
+        ["Build", "density"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
       ]
     },
     geometry: {
       title: "Geometry",
       items: [
-        ["Right hand", "depth / camera feel"],
-        ["Right pinch", "FX / warp"],
-        ["Build", "more layers"],
-        ["MIDI note", "pulse"],
+        ["Right", "depth"],
+        ["Pinch", "warp"],
+        ["Build", "layers"],
+        ["MIDI", "pulse"],
         ["R", "reset"]
       ]
     },
     plasma: {
       title: "Plasma",
       items: [
-        ["Right hand", "palette / drift"],
-        ["Right pinch", "contrast / speed"],
-        ["Build", "more energy"],
-        ["MIDI note", "kick wobble"],
+        ["Right", "palette"],
+        ["Pinch", "contrast"],
+        ["Build", "energy"],
+        ["MIDI", "wobble"],
         ["R", "reset"]
       ]
     },
     warp: {
       title: "DomainWarp",
       items: [
-        ["Right pinch", "ink / smoothness"],
-        ["Right speed", "warp amount"],
+        ["Pinch", "ink"],
+        ["Right speed", "warp"],
         ["Right Y", "speed"],
-        ["Build", "detail + intensity"],
-        ["MIDI note", "shock / motion"],
-        ["LOW mode", "lower octaves"],
+        ["Build", "detail"],
+        ["MIDI", "shock"],
+        ["LOW", "octave"],
         ["R", "reset"]
       ]
     },
     cellular: {
       title: "Cellular",
       items: [
-        ["Right pinch", "wet / glow"],
+        ["Pinch", "glow"],
         ["Right speed", "jitter"],
         ["Right X", "scale"],
-        ["Right Y", "sharpness"],
+        ["Right Y", "sharp"],
         ["Build", "density"],
-        ["MIDI note", "edge glow"],
+        ["MIDI", "edge"],
         ["R", "reset"]
       ]
     },
     tunnel: {
       title: "Tunnel",
       items: [
-        ["Right pinch", "neon glow"],
+        ["Pinch", "glow"],
         ["Right X", "twist"],
         ["Right Y", "speed"],
-        ["Right speed", "quality (steps)"],
-        ["Build", "aggression"],
-        ["MIDI note", "flash"],
-        ["LOW mode", "lower steps"],
+        ["Right speed", "steps"],
+        ["Build", "aggr"],
+        ["MIDI", "flash"],
+        ["LOW", "steps"],
+        ["R", "reset"]
+      ]
+    },
+    drone: {
+      title: "Drone",
+      items: [
+        ["Right pinch", "mouse down"],
+        ["Right X", "mouse X"],
+        ["Right Y", "mouse Y"],
+        ["Right speed", "iters"],
+        ["Build", "contrast"],
         ["R", "reset"]
       ]
     },
@@ -300,137 +336,138 @@ async function main() {
       items: [
         ["Right X", "feed"],
         ["Right Y", "kill"],
-        ["Right pinch", "brush (paint B)"],
-        ["Build", "sim speed"],
-        ["MIDI note", "kick agitation"],
-        ["LOW mode", "lower sim res"],
+        ["Pinch", "paint"],
+        ["Build", "speed"],
+        ["MIDI", "agitate"],
+        ["LOW", "res"],
         ["R", "reseed"]
       ]
     },
     quasi: {
       title: "Quasicrystals",
       items: [
-        ["Right hand", "pattern feel"],
-        ["Right pinch", "wet / shimmer"],
-        ["Build", "more structure"],
-        ["MIDI note", "spark"],
+        ["Right", "pattern"],
+        ["Pinch", "shimmer"],
+        ["Build", "structure"],
+        ["MIDI", "spark"],
         ["R", "reset"]
       ]
     },
     dla: {
       title: "DLA",
       items: [
-        ["Build", "growth speed"],
-        ["Left hand", "energy bias"],
-        ["MIDI note", "faster climbing"],
-        ["LOW mode", "lower-res but stable"],
-        ["R", "reset growth"]
+        ["Build", "growth"],
+        ["Left", "bias"],
+        ["MIDI", "speed"],
+        ["LOW", "stable"],
+        ["R", "reset"]
       ]
     },
     bif: {
       title: "Bifurcation",
       items: [
-        ["Right hand", "parameter sweep"],
-        ["Build", "more branches"],
-        ["MIDI note", "jump / pulse"],
+        ["Right", "sweep"],
+        ["Build", "branches"],
+        ["MIDI", "pulse"],
         ["R", "reset"]
       ]
     },
     wavelab: {
       title: "WaveLab",
       items: [
-        ["Left hand", "select voice / mix"],
-        ["Right hand", "space / timbre"],
-        ["Wave edit", "gestures can edit partials"],
-        ["Build", "more motion"],
-        ["R", "reset + clear edits"]
+        ["Left", "voice"],
+        ["Right", "space"],
+        ["Wave edit", "partials"],
+        ["Build", "motion"],
+        ["R", "clear"]
       ]
     },
     physics: {
       title: "Physics",
       items: [
-        ["Pinch", "grab cloth"],
-        ["Fast movement", "rip / tear"],
-        ["Build", "heavier motion"],
-        ["R", "rebuild cloth"]
+        ["Pinch", "grab"],
+        ["Fast", "tear"],
+        ["Build", "weight"],
+        ["R", "rebuild"]
       ]
     },
     lloyd: {
       title: "Lloyd",
       items: [
-        ["Right hand", "relaxation / pull"],
-        ["Pinch", "field strength"],
-        ["Build", "more energy"],
-        ["MIDI note", "burst"]
+        ["Right", "relax"],
+        ["Pinch", "strength"],
+        ["Build", "energy"],
+        ["MIDI", "burst"],
+        ["R", "reset"]
       ]
     },
     rrt: {
       title: "RRT",
       items: [
-        ["Right hand", "goal bias"],
-        ["Build", "faster expansion"],
-        ["MIDI note", "branch burst"],
+        ["Right", "bias"],
+        ["Build", "expand"],
+        ["MIDI", "burst"],
         ["R", "reset"]
       ]
     },
     arboretum: {
       title: "Arboretum",
       items: [
-        ["Right hand", "shape / wind"],
+        ["Right", "wind"],
         ["Build", "density"],
-        ["MIDI note", "growth pulse"],
+        ["MIDI", "pulse"],
         ["R", "reset"]
       ]
     },
     koch: {
       title: "Koch",
       items: [
-        ["Right hand", "depth / rotation"],
-        ["Build", "more recursion"],
-        ["MIDI note", "pulse"],
+        ["Right", "depth"],
+        ["Build", "recursion"],
+        ["MIDI", "pulse"],
         ["R", "reset"]
       ]
     },
     bosWarp: {
       title: "BoS Warp",
       items: [
-        ["Right hand", "scale / speed"],
-        ["Right pinch", "warp amount"],
-        ["Build", "detail + intensity"],
-        ["MIDI note", "burst"],
-        ["LOW mode", "fewer octaves"],
+        ["Right", "scale"],
+        ["Pinch", "warp"],
+        ["Build", "detail"],
+        ["MIDI", "burst"],
+        ["LOW", "octaves"],
         ["R", "reset"]
       ]
     },
     kaleidoscope: {
       title: "Kaleidoscope",
       items: [
-        ["Right hand", "zoom / speed"],
-        ["Right pinch", "twist"],
-        ["Build", "segments + motion"],
-        ["MIDI note", "burst"],
-        ["LOW mode", "lower detail"],
+        ["Right", "zoom"],
+        ["Pinch", "twist"],
+        ["Build", "segments"],
+        ["MIDI", "burst"],
+        ["LOW", "detail"],
         ["R", "reset"]
       ]
     },
     metaballs: {
       title: "Metaballs",
       items: [
-        ["Right hand", "zoom / speed"],
-        ["Right pinch", "threshold / glow"],
-        ["Build", "more blobs"],
-        ["MIDI note", "burst"],
-        ["LOW mode", "fewer blobs"],
+        ["Right", "zoom"],
+        ["Pinch", "glow"],
+        ["Build", "blobs"],
+        ["MIDI", "burst"],
+        ["LOW", "blobs"],
         ["R", "reset"]
       ]
     },
     ascii: {
       title: "ASCII",
       items: [
-        ["Camera", "silhouette -> glyphs"],
-        ["Right pinch", "wet / smear"],
-        ["Build", "more ink"],
-        ["MIDI note", "kick smear"],
+        ["Camera", "glyphs"],
+        ["Pinch", "smear"],
+        ["Build", "ink"],
+        ["MIDI", "smear"],
         ["R", "reset"]
       ]
     }
@@ -440,8 +477,8 @@ async function main() {
     const h = sceneHints[sceneId];
     const title = h?.title ?? sceneName;
     const items = h?.items ?? [
-      ["Left hand", "mix / select"],
-      ["Right hand", "space / FX"],
+      ["Left", "mix"],
+      ["Right", "space"],
       ["Build", "energy"],
       ["R", "reset"]
     ];
@@ -465,6 +502,44 @@ async function main() {
   const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
   tracker.setWantLandmarks(overlayOn);
   const midi = new MidiInput();
+
+  const AUTOPLAY_KEY = "cam_game_autoplay";
+  let autoplayOn = true;
+  try {
+    const v = window.localStorage.getItem(AUTOPLAY_KEY);
+    if (v === "0") autoplayOn = false;
+  } catch {
+  }
+  const autoplayIntervalMs = 18000;
+  let lastAutoSceneAt = performance.now();
+
+  const setAutoplayOn = (on: boolean) => {
+    autoplayOn = on;
+    autoplayBtn.textContent = autoplayOn ? "AUTOPLAY: ON" : "AUTOPLAY: OFF";
+    try {
+      window.localStorage.setItem(AUTOPLAY_KEY, autoplayOn ? "1" : "0");
+    } catch {
+    }
+    lastAutoSceneAt = performance.now();
+  };
+  setAutoplayOn(autoplayOn);
+
+  const applySceneDelta = (delta: -1 | 1) => {
+    // "drone" scene is exclusive to DRONE mode.
+    // When in performance mode, skip over it during cycling/autoplay.
+    let s = visuals.nextScene(delta);
+    if (audioMode === "performance") {
+      let guard = 0;
+      while (s.id === "drone" && guard++ < 6) {
+        s = visuals.nextScene(delta);
+      }
+    }
+    sceneBadge.textContent = `Scene: ${s.name}`;
+    renderHints(s.id, s.name);
+    audio?.setScene(s.id);
+    lastAutoSceneAt = performance.now();
+    return s;
+  };
 
   let hudOn = true;
   let camTrackOn = true;
@@ -777,19 +852,19 @@ async function main() {
 
       {
         const nowMs = performance.now();
-        const trAny: any = tracker as any;
-        const inferMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
-        const enable = hands.count > 0 && inferMs >= 18;
-        const disable = inferMs > 0 && inferMs <= 12;
-
-        if (!autoLowVision && enable && nowMs - autoLowVisionSince > 600) {
-          autoLowVision = true;
-          autoLowVisionSince = nowMs;
-        } else if (autoLowVision && disable && nowMs - autoLowVisionSince > 900) {
-          autoLowVision = false;
-          autoLowVisionSince = nowMs;
+        if (hands.count > 0) {
+          noHandsSinceMs = null;
+          handsPrompt.style.display = "none";
+        } else {
+          if (noHandsSinceMs == null) noHandsSinceMs = nowMs;
+          const show = nowMs - noHandsSinceMs > 800;
+          handsPrompt.style.display = show ? "block" : "none";
         }
       }
+
+      // Auto LOW mode disabled (manual control only).
+      autoLowVision = false;
+      autoLowVisionSince = 0;
 
       if (camTrackOn) {
         const nowOv = performance.now();
@@ -923,24 +998,25 @@ async function main() {
       visuals.triggerBurst(Math.min(1.5, burst));
     }
 
-      const vizT0 = performance.now();
-      let audioViz: any = null;
-      if (audioVizOn) {
-        const now = performance.now();
-        // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
-        // cause GC/LongTasks if called every frame.
-        const minIntervalMs = autoLowVision ? 120 : 66;
-        if (!lastAudioVizAt || now - lastAudioVizAt >= minIntervalMs) {
-          lastAudioVizAt = now;
-          lastAudioViz = audio?.getWaveforms() ?? null;
-        }
-        audioViz = lastAudioViz;
+    const vizT0 = performance.now();
+    let audioViz: any = null;
+    if (audioVizOn) {
+      const now = performance.now();
+      // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
+      // cause GC/LongTasks if called every frame.
+      const minIntervalMs = 66;
+      if (!lastAudioVizAt || now - lastAudioVizAt >= minIntervalMs) {
+        lastAudioVizAt = now;
+        lastAudioViz = audio?.getWaveforms() ?? null;
       }
-      const vizT1 = performance.now();
-      tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
-      const beatPulse = audio?.getPulse?.() ?? 0;
-      if (audioViz) {
-        (control as any).audioViz = audioViz;
+      audioViz = lastAudioViz;
+    }
+    const vizT1 = performance.now();
+    tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
+
+    const beatPulse = audio?.getPulse?.() ?? 0;
+    if (audioViz) {
+      (control as any).audioViz = audioViz;
 
       const kick = (audioViz as any).kick as Float32Array | undefined;
       let peak = 0;
@@ -974,8 +1050,7 @@ async function main() {
       beatViz = Math.max(0, beatViz - (control as any).dt * 1.75);
     }
 
-    const bpOut =
-      Math.max(beatPulse, beatViz);
+    const bpOut = Math.max(beatPulse, beatViz);
     (control as any).beatPulse = bpOut;
     if (running) audSpan.title = `beat: ${bpOut.toFixed(3)}`;
     const controlWithViz = control as any;
@@ -984,10 +1059,14 @@ async function main() {
 
     const sceneDelta = controlWithViz.events.sceneDelta;
     if (sceneDelta !== 0) {
-      const s = visuals.nextScene(sceneDelta);
-      sceneBadge.textContent = `Scene: ${s.name}`;
-      renderHints(s.id, s.name);
-      audio?.setScene(s.id);
+      applySceneDelta(sceneDelta as any);
+    }
+
+    if (autoplayOn && audioMode === "performance") {
+      const nowAuto = performance.now();
+      if (nowAuto - lastAutoSceneAt >= autoplayIntervalMs) {
+        applySceneDelta(1);
+      }
     }
 
     if (controlWithViz.events.reset) {
@@ -1292,8 +1371,10 @@ async function main() {
     prevBtn.disabled = false;
     nextBtn.disabled = false;
     overlayBtn.disabled = false;
+    autoplayBtn.disabled = false;
     startBtn.textContent = "Enter Performance";
     lastT = performance.now();
+    lastAutoSceneAt = performance.now();
 
     if (audioUpdateTimer !== null) {
       try {
@@ -1327,6 +1408,7 @@ async function main() {
     prevBtn.disabled = true;
     nextBtn.disabled = true;
     overlayBtn.disabled = true;
+    autoplayBtn.disabled = true;
     if (audioUpdateTimer !== null) {
       try {
         window.clearInterval(audioUpdateTimer);
@@ -1368,20 +1450,29 @@ async function main() {
     modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
     updateGestureHint(audioMode);
     audio?.setMode(audioMode);
+    if (audioMode === "drone") {
+      const s = visuals.setScene("drone");
+      sceneBadge.textContent = `Scene: ${s.name}`;
+      renderHints(s.id, s.name);
+      audio?.setScene(s.id);
+    } else {
+      // Leaving DRONE: if we're on the exclusive drone scene, jump back to a normal scene.
+      if (visuals.current.id === "drone") {
+        const s = visuals.setScene("metaballs");
+        sceneBadge.textContent = `Scene: ${s.name}`;
+        renderHints(s.id, s.name);
+        audio?.setScene(s.id);
+      }
+    }
+    lastAutoSceneAt = performance.now();
   });
 
   prevBtn.addEventListener("click", () => {
-    const s = visuals.nextScene(-1);
-    sceneBadge.textContent = `Scene: ${s.name}`;
-    renderHints(s.id, s.name);
-    audio?.setScene(s.id);
+    applySceneDelta(-1);
   });
 
   nextBtn.addEventListener("click", () => {
-    const s = visuals.nextScene(1);
-    sceneBadge.textContent = `Scene: ${s.name}`;
-    renderHints(s.id, s.name);
-    audio?.setScene(s.id);
+    applySceneDelta(1);
   });
 
   overlayBtn.addEventListener("click", () => {
@@ -1389,6 +1480,10 @@ async function main() {
     overlayBtn.textContent = overlayOn ? "HANDS: ON" : "HANDS: OFF";
     overlay.setEnabled(overlayOn);
     tracker.setWantLandmarks(overlayOn);
+  });
+
+  autoplayBtn.addEventListener("click", () => {
+    setAutoplayOn(!autoplayOn);
   });
 
   window.addEventListener("keydown", (e) => {
@@ -1491,16 +1586,10 @@ async function main() {
       }
 
       if (e.key === "ArrowLeft") {
-        const s = visuals.nextScene(-1);
-        sceneBadge.textContent = `Scene: ${s.name}`;
-        renderHints(s.id, s.name);
-        audio?.setScene(s.id);
+        applySceneDelta(-1);
       }
       if (e.key === "ArrowRight") {
-        const s = visuals.nextScene(1);
-        sceneBadge.textContent = `Scene: ${s.name}`;
-        renderHints(s.id, s.name);
-        audio?.setScene(s.id);
+        applySceneDelta(1);
       }
       if (e.key.toLowerCase() === "r") {
         audio?.reset();
@@ -1530,7 +1619,6 @@ async function main() {
 
     if (note === 47) {
       visuals.triggerBurst(0.08 + 0.12 * vel);
-      return;
     }
 
     audio.handleMidi([{ type: "noteon", channel: 0, note, velocity: vel }]);

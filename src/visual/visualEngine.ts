@@ -7,6 +7,7 @@ import { PlasmaScene } from "./visuals/plasmaScene";
 import { DomainWarpScene } from "./visuals/domainWarpScene";
 import { CellularScene } from "./visuals/cellularScene";
 import { RaymarchTunnelScene } from "./visuals/raymarchTunnelScene";
+import { DroneFractalScene } from "./visuals/droneFractalScene";
 import { ReactionDiffusionScene } from "./visuals/reactionDiffusionScene";
 import { WaveLabScene } from "./visuals/waveLabScene";
 import { PhysicsScene } from "./visuals/physicsScene";
@@ -251,6 +252,7 @@ export class VisualEngine {
     const warp = new DomainWarpScene();
     const cellular = new CellularScene();
     const tunnel = new RaymarchTunnelScene();
+    const drone = new DroneFractalScene();
     const rd = new ReactionDiffusionScene();
     const wave = new WaveLabScene();
     const phys = new PhysicsScene();
@@ -268,7 +270,7 @@ export class VisualEngine {
     const metaballs = new MetaballsScene();
 
     // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs] as any[]) {
+    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs] as any[]) {
       if (typeof sc.setRenderer === "function") {
         sc.setRenderer(this.renderer);
       }
@@ -281,6 +283,7 @@ export class VisualEngine {
       { def: { id: "warp", name: "DomainWarp" }, scene: warp },
       { def: { id: "cellular", name: "Cellular" }, scene: cellular },
       { def: { id: "tunnel", name: "Tunnel" }, scene: tunnel },
+      { def: { id: "drone", name: "Drone" }, scene: drone },
       { def: { id: "quasi", name: "Quasicrystals" }, scene: quasi },
       { def: { id: "rd", name: "ReactionDiffusion" }, scene: rd },
       { def: { id: "dla", name: "DLA" }, scene: dla },
@@ -303,6 +306,18 @@ export class VisualEngine {
 
   get current(): SceneDef {
     return this.scenes[this.sceneIndex]!.def;
+  }
+
+  setScene(id: string): SceneDef {
+    const idx = this.scenes.findIndex((s) => s.def.id === id);
+    if (idx < 0) return this.current;
+    this.sceneIndex = idx;
+    const s: any = this.scenes[this.sceneIndex]!.scene as any;
+    if (typeof s.setSafeMode === "function") {
+      s.setSafeMode(this.safeMode);
+    }
+    this.catAmount = Math.max(this.catAmount, 0.9);
+    return this.current;
   }
 
   nextScene(delta: -1 | 1): SceneDef {

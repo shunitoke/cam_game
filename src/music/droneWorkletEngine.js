@@ -1,4 +1,4 @@
-export const AUDIO_ENGINE_VERSION = "worklet-drone-0.1";
+export const AUDIO_ENGINE_VERSION = "worklet-dual-0.2";
 function clamp(v, a, b) {
     return Math.min(b, Math.max(a, v));
 }
@@ -9,14 +9,257 @@ function expRange01(x, a, b) {
 function midiToHz(n) {
     return 440 * Math.pow(2, (n - 69) / 12);
 }
+function makeDriveCurve(amount) {
+    const a = clamp(amount, 0, 1);
+    const n = 1024;
+    const curve = new Float32Array(n);
+    const k = 1 + a * 24;
+    for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * 2 - 1;
+        curve[i] = Math.tanh(x * k);
+    }
+    return curve;
+}
 export class DroneWorkletEngine {
     ctx = null;
     node = null;
     master = null;
+    // RAVE samples
+    samplesLoaded = false;
+    loadingSamples = null;
+    sampleKick = null;
+    sampleHat = null;
+    sampleClap = null;
+    sampleOpenHat = null;
+    sampleSnare = null;
+    sampleRim = null;
+    lastError = null;
+    drumGain = null;
+    drumLP = null;
+    drumHP = null;
+    // RAVE FX
+    fxIn = null;
+    fxFilter = null;
+    fxDrive = null;
+    fxOut = null;
+    fxDelay = null;
+    fxDelayFb = null;
+    fxDelayMix = null;
+    rumbleSend = null;
+    rumbleDelay = null;
+    rumbleFb = null;
+    rumbleLP = null;
+    rumbleHP = null;
+    rumbleOut = null;
+    raveTimer = null;
+    raveNextStepT = 0;
+    raveStep = 0;
+    raveBpm = 138;
+    raveBar = 0;
+    pulse = 0;
+    fxHold = 0;
     started = false;
+    mode = "performance";
     gate = 0;
     currentMidi = null;
+    lastRightPinch = 0;
     lastParamsSentAt = 0;
+    async loadSample(ctx, url) {
+        const res = await fetch(url);
+        const buf = await res.arrayBuffer();
+        return await ctx.decodeAudioData(buf);
+    }
+    async tryLoadSample(ctx, urls) {
+        for (const url of urls) {
+            try {
+                return await this.loadSample(ctx, url);
+            }
+            catch {
+                // try next
+            }
+        }
+        return null;
+    }
+    sampleUrls(file) {
+        const baseLocal = "/samples/909";
+        const baseA = "https://tonejs.github.io/audio/drum-samples/909";
+        const baseB = "https://cdn.jsdelivr.net/gh/Tonejs/audio@master/drum-samples/909";
+        const baseC = "https://raw.githubusercontent.com/Tonejs/audio/master/drum-samples/909";
+        return [`${baseLocal}/${file}`, `${baseA}/${file}`, `${baseB}/${file}`, `${baseC}/${file}`];
+    }
+    ensureRaveScheduler() {
+        if (!this.ctx)
+            return;
+        if (!this.drumGain || !this.drumLP || !this.drumHP)
+            return;
+        if (this.raveTimer != null)
+            return;
+        const ctx = this.ctx;
+        this.raveNextStepT = ctx.currentTime + 0.05;
+        this.raveStep = 0;
+        this.raveBar = 0;
+        const tick = () => {
+            if (!this.ctx)
+                return;
+            if (this.mode !== "performance")
+                return;
+            if (!this.samplesLoaded)
+                return;
+            if (!this.sampleKick || !this.sampleHat)
+                return;
+            const now = this.ctx.currentTime;
+            const lookahead = 0.35;
+            const secPerStep = (60 / Math.max(1e-6, this.raveBpm)) / 4; // 16ths
+            // Catch up if we stalled.
+            if (this.raveNextStepT < now - 0.05) {
+                const missed = Math.floor((now - this.raveNextStepT) / secPerStep);
+                this.raveStep = (this.raveStep + missed) & 15;
+                this.raveNextStepT += missed * secPerStep;
+            }
+            while (this.raveNextStepT < now + lookahead) {
+                this.scheduleRaveStep(this.raveNextStepT, this.raveStep);
+                this.raveStep = (this.raveStep + 1) & 15;
+                if (this.raveStep === 0)
+                    this.raveBar++;
+                this.raveNextStepT += secPerStep;
+            }
+        };
+        this.raveTimer = window.setInterval(() => {
+            try {
+                tick();
+            }
+            catch {
+                // ignore
+            }
+        }, 25);
+    }
+    stopRaveScheduler() {
+        if (this.raveTimer == null)
+            return;
+        try {
+            window.clearInterval(this.raveTimer);
+        }
+        catch {
+        }
+        this.raveTimer = null;
+    }
+    fireSample(time, buffer, gain, rate = 1) {
+        if (!this.ctx)
+            return;
+        if (!this.drumGain)
+            return;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buffer;
+        src.playbackRate.value = rate;
+        const g = this.ctx.createGain();
+        g.gain.value = Math.max(0, gain);
+        src.connect(g);
+        g.connect(this.drumGain);
+        src.start(time);
+        src.stop(time + Math.min(2.0, buffer.duration + 0.1));
+    }
+    fireKick(time, gain = 1.0) {
+        if (!this.sampleKick)
+            return;
+        if (!this.ctx)
+            return;
+        if (!this.rumbleSend || !this.rumbleOut) {
+            this.fireSample(time, this.sampleKick, gain, 1.0);
+            return;
+        }
+        // Kick to main + rumble send
+        const ctx = this.ctx;
+        const src = ctx.createBufferSource();
+        src.buffer = this.sampleKick;
+        src.playbackRate.value = 1.0;
+        const gMain = ctx.createGain();
+        gMain.gain.value = Math.max(0, gain);
+        const gSend = ctx.createGain();
+        gSend.gain.value = 0.65;
+        src.connect(gMain);
+        src.connect(gSend);
+        gMain.connect(this.drumGain);
+        gSend.connect(this.rumbleSend);
+        // Duck rumble on kick
+        try {
+            const p = this.rumbleOut.gain;
+            p.cancelScheduledValues(time);
+            p.setValueAtTime(p.value, time);
+            p.linearRampToValueAtTime(0.12, time + 0.01);
+            p.linearRampToValueAtTime(0.95, time + 0.18);
+        }
+        catch {
+        }
+        src.start(time);
+        src.stop(time + Math.min(2.0, this.sampleKick.duration + 0.1));
+        // Visual pulse (kick-driven)
+        this.pulse = 1;
+    }
+    scheduleRaveStep(time, step) {
+        // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
+        // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
+        const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+        const bar = this.raveBar;
+        const section = bar < 4 ? 0 : bar < 8 ? 1 : bar < 16 ? 2 : 3;
+        const peak = section >= 3;
+        const kick = step === 0 || step === 4 || step === 8 || step === 12;
+        const offHat = step === 2 || step === 6 || step === 10 || step === 14;
+        const hat16 = (step & 1) === 1;
+        const openHat = step === 14;
+        // Sparse minimal punctuation
+        const rim = step === 10;
+        const snare = step === 12;
+        // Fills: last bar of 8-bar phrase
+        const inFillBar = (bar % 8) === 7;
+        const fillHat = inFillBar && (step === 11 || step === 13 || step === 15);
+        const fillRim = inFillBar && (step === 15 || step === 12);
+        if (kick) {
+            this.fireKick(time, 1.0);
+        }
+        // Occasional pre-push only at phrase end
+        if (inFillBar && step === 15) {
+            this.fireKick(time, 0.35);
+        }
+        // Hats
+        if (offHat && this.sampleHat) {
+            const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.20;
+            this.fireSample(time, this.sampleHat, v, 1.02);
+        }
+        // 16th hats come in gradually and with pinch
+        if (hat16 && this.sampleHat) {
+            const on = (section >= 2 && dens > 0.2) || (peak && dens > 0.05);
+            if (on) {
+                const v = 0.06 + 0.10 * dens;
+                this.fireSample(time, this.sampleHat, v, 1.08);
+            }
+        }
+        // Open hat on the offbeat when density rises
+        if (openHat && this.sampleOpenHat) {
+            const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
+            if ((section >= 2 || peak) && m > 0.02) {
+                this.fireSample(time, this.sampleOpenHat, 0.08 + 0.16 * m, 1.0);
+            }
+        }
+        // Rim/snare: keep it minimal, no clap
+        if (rim && this.sampleRim) {
+            if (section >= 1 && dens > 0.15) {
+                this.fireSample(time, this.sampleRim, 0.08 + 0.10 * dens, 1.0);
+            }
+        }
+        if (snare && this.sampleSnare) {
+            // snare comes in later (avoid pop/party clap vibe)
+            if (section >= 2) {
+                this.fireSample(time + 0.004, this.sampleSnare, 0.18 + 0.18 * dens, 1.0);
+            }
+        }
+        // Fills
+        if (fillHat && this.sampleHat) {
+            this.fireSample(time, this.sampleHat, 0.18, 1.14);
+        }
+        if (fillRim && this.sampleRim) {
+            this.fireSample(time, this.sampleRim, 0.18, 1.0);
+        }
+    }
     async start() {
         if (this.started)
             return;
@@ -35,15 +278,125 @@ export class DroneWorkletEngine {
         this.master = master;
         node.connect(master);
         master.connect(ctx.destination);
+        // RAVE drum chain -> FX bus -> master
+        this.drumGain = ctx.createGain();
+        this.drumGain.gain.value = 0.95;
+        this.drumHP = ctx.createBiquadFilter();
+        this.drumHP.type = "highpass";
+        this.drumHP.frequency.value = 22;
+        this.drumLP = ctx.createBiquadFilter();
+        this.drumLP.type = "lowpass";
+        this.drumLP.frequency.value = 12000;
+        this.drumLP.Q.value = 0.2;
+        this.fxIn = ctx.createGain();
+        this.fxIn.gain.value = 1.0;
+        this.fxFilter = ctx.createBiquadFilter();
+        this.fxFilter.type = "lowpass";
+        this.fxFilter.frequency.value = 14000;
+        this.fxFilter.Q.value = 0.6;
+        this.fxDrive = ctx.createWaveShaper();
+        this.fxDrive.curve = makeDriveCurve(0.0);
+        this.fxDrive.oversample = "2x";
+        this.fxOut = ctx.createGain();
+        this.fxOut.gain.value = 0.95;
+        this.fxDelay = ctx.createDelay(1.5);
+        this.fxDelay.delayTime.value = 0.25;
+        this.fxDelayFb = ctx.createGain();
+        this.fxDelayFb.gain.value = 0.35;
+        this.fxDelayMix = ctx.createGain();
+        this.fxDelayMix.gain.value = 0.0;
+        // dry path
+        this.drumGain.connect(this.drumHP);
+        this.drumHP.connect(this.drumLP);
+        this.drumLP.connect(this.fxIn);
+        this.fxIn.connect(this.fxFilter);
+        this.fxFilter.connect(this.fxDrive);
+        this.fxDrive.connect(this.fxOut);
+        this.fxOut.connect(master);
+        // delay send
+        this.fxIn.connect(this.fxDelay);
+        this.fxDelay.connect(this.fxDelayMix);
+        this.fxDelayMix.connect(master);
+        // feedback
+        this.fxDelay.connect(this.fxDelayFb);
+        this.fxDelayFb.connect(this.fxDelay);
+        // Rumble/space bus: filtered feedback delay
+        this.rumbleSend = ctx.createGain();
+        this.rumbleSend.gain.value = 0.0;
+        this.rumbleDelay = ctx.createDelay(1.5);
+        this.rumbleDelay.delayTime.value = 0.24;
+        this.rumbleFb = ctx.createGain();
+        this.rumbleFb.gain.value = 0.55;
+        this.rumbleLP = ctx.createBiquadFilter();
+        this.rumbleLP.type = "lowpass";
+        this.rumbleLP.frequency.value = 180;
+        this.rumbleLP.Q.value = 0.4;
+        this.rumbleHP = ctx.createBiquadFilter();
+        this.rumbleHP.type = "highpass";
+        this.rumbleHP.frequency.value = 32;
+        this.rumbleHP.Q.value = 0.7;
+        this.rumbleOut = ctx.createGain();
+        this.rumbleOut.gain.value = 0.95;
+        this.rumbleSend.connect(this.rumbleDelay);
+        this.rumbleDelay.connect(this.rumbleLP);
+        this.rumbleLP.connect(this.rumbleHP);
+        this.rumbleHP.connect(this.rumbleOut);
+        this.rumbleOut.connect(master);
+        // feedback
+        this.rumbleOut.connect(this.rumbleFb);
+        this.rumbleFb.connect(this.rumbleDelay);
         // Ensure audio starts immediately after user gesture.
         if (ctx.state === "suspended") {
             await ctx.resume();
         }
         this.started = true;
+        // Kick off sample loading (async) and scheduler.
+        void this.ensureSamplesLoaded();
+        this.ensureRaveScheduler();
+    }
+    async ensureSamplesLoaded() {
+        if (this.samplesLoaded)
+            return;
+        if (this.loadingSamples)
+            return await this.loadingSamples;
+        if (!this.ctx)
+            return;
+        const ctx = this.ctx;
+        this.loadingSamples = (async () => {
+            try {
+                this.sampleKick = await this.tryLoadSample(ctx, this.sampleUrls("kick.mp3"));
+                this.sampleHat =
+                    (await this.tryLoadSample(ctx, this.sampleUrls("hihat.mp3"))) ??
+                        (await this.tryLoadSample(ctx, this.sampleUrls("hat.mp3"))) ??
+                        (await this.tryLoadSample(ctx, this.sampleUrls("chh.mp3")));
+                this.sampleClap = await this.tryLoadSample(ctx, this.sampleUrls("clap.mp3"));
+                this.sampleOpenHat =
+                    (await this.tryLoadSample(ctx, this.sampleUrls("openhat.mp3"))) ??
+                        (await this.tryLoadSample(ctx, this.sampleUrls("ohh.mp3"))) ??
+                        (await this.tryLoadSample(ctx, this.sampleUrls("openhihat.mp3")));
+                this.sampleSnare = await this.tryLoadSample(ctx, this.sampleUrls("snare.mp3"));
+                this.sampleRim =
+                    (await this.tryLoadSample(ctx, this.sampleUrls("rimshot.mp3"))) ??
+                        (await this.tryLoadSample(ctx, this.sampleUrls("rim.mp3")));
+                if (!this.sampleKick || !this.sampleHat) {
+                    this.lastError = "RAVE samples missing: need kick+hat";
+                    this.samplesLoaded = false;
+                    return;
+                }
+                this.samplesLoaded = true;
+                this.lastError = null;
+            }
+            catch (e) {
+                this.samplesLoaded = false;
+                this.lastError = e instanceof Error ? e.message : "sample load failed";
+            }
+        })();
+        await this.loadingSamples;
     }
     async stop() {
         if (!this.started)
             return;
+        this.stopRaveScheduler();
         try {
             this.node?.disconnect();
         }
@@ -62,6 +415,15 @@ export class DroneWorkletEngine {
         this.ctx = null;
         this.node = null;
         this.master = null;
+        this.drumGain = null;
+        this.drumLP = null;
+        this.drumHP = null;
+        this.rumbleSend = null;
+        this.rumbleDelay = null;
+        this.rumbleFb = null;
+        this.rumbleLP = null;
+        this.rumbleHP = null;
+        this.rumbleOut = null;
         this.started = false;
     }
     update(control) {
@@ -69,13 +431,22 @@ export class DroneWorkletEngine {
             return;
         if (!this.node)
             return;
+        // Decay visual pulse regardless of param throttling.
+        {
+            const dt = Math.max(0, Math.min(0.05, control.dt ?? 0.016));
+            this.pulse = Math.max(0, this.pulse - dt * 2.6);
+        }
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();
         // Keep main-thread messages low-frequency; the DSP is in the worklet.
         if (now - this.lastParamsSentAt < 33)
             return;
         this.lastParamsSentAt = now;
         // Base pitch: either held MIDI note, or left hand X.
-        const baseHz = this.currentMidi != null ? midiToHz(this.currentMidi) : expRange01(control.leftX, 55, 220);
+        // In RAVE (performance) we don't want keyboard notes to detune the whole track,
+        // so only apply MIDI pitch when in drone mode.
+        const baseHz = this.mode === "drone" && this.currentMidi != null
+            ? midiToHz(this.currentMidi)
+            : expRange01(control.leftX, 55, 220);
         // Brightness: right hand Y (in ControlBus Y is already flipped)
         const cutoff = expRange01(control.rightY, 120, 6200);
         // Drive/texture: build + right pinch
@@ -100,11 +471,64 @@ export class DroneWorkletEngine {
         const tickAmt = clamp(0.00 + control.rightPinch * 0.55, 0, 0.9);
         const tickDecay = expRange01(1 - control.rightY, 0.01, 0.11);
         const tickTone = expRange01(control.rightY, 400, 5200);
-        // Level: left pinch opens the drone, fist/kill shuts it.
+        // Guitar (right hand): pinch = pluck trigger, X = pitch, Y = brightness
+        const guitarFreq = expRange01(control.rightX, 82, 392);
+        const guitarBright = clamp(control.rightY, 0, 1);
+        const rPinch = clamp(control.rightPinch, 0, 1);
+        const pluck = rPinch > 0.65 && this.lastRightPinch <= 0.65 ? 1 : 0;
+        this.lastRightPinch = rPinch;
+        // RAVE: map tempo + drum tone to hands
+        if (this.mode === "performance") {
+            this.raveBpm = expRange01(control.leftX, 126, 152);
+            if (this.drumLP) {
+                this.drumLP.frequency.value = expRange01(control.rightY, 1400, 14000);
+            }
+            if (this.drumGain) {
+                this.drumGain.gain.value = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
+            }
+            // FX: right hand is the DJ macro
+            // Hold right pinch to engage FX strongly (filter + drive + delay throw)
+            const pinch = clamp(control.rightPinch, 0, 1);
+            this.fxHold = Math.max(0, Math.min(1, this.fxHold + (pinch - this.fxHold) * 0.15));
+            const fx = this.fxHold;
+            const cut = expRange01(1 - control.rightY, 180, 14000);
+            const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1);
+            if (this.fxFilter) {
+                this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
+                this.fxFilter.frequency.value = cut;
+                this.fxFilter.Q.value = q;
+            }
+            if (this.fxDrive) {
+                this.fxDrive.curve = makeDriveCurve(0.15 + 0.85 * fx);
+            }
+            if (this.fxDelay && this.fxDelayFb && this.fxDelayMix) {
+                this.fxDelay.delayTime.value = expRange01(control.rightX, 0.12, 0.38);
+                this.fxDelayFb.gain.value = 0.25 + 0.55 * fx;
+                this.fxDelayMix.gain.value = 0.00 + 0.55 * fx;
+            }
+            if (this.rumbleSend && this.rumbleFb && this.rumbleDelay) {
+                const b = clamp(control.build, 0, 1);
+                const dens = clamp(control.rightPinch, 0, 1);
+                this.rumbleSend.gain.value = 0.02 + 0.22 * b;
+                this.rumbleFb.gain.value = 0.50 + 0.35 * b;
+                this.rumbleDelay.delayTime.value = expRange01(control.rightX, 0.18, 0.34);
+                if (this.rumbleLP)
+                    this.rumbleLP.frequency.value = expRange01(control.rightY, 120, 260);
+                if (this.rumbleHP)
+                    this.rumbleHP.frequency.value = 28 + 18 * (1 - dens);
+            }
+            this.ensureRaveScheduler();
+        }
+        // Level: DRONE is gated by left pinch, RAVE plays by itself.
         const kill = !!control.kill;
-        const gate = kill ? 0 : clamp(Math.max(this.gate, control.leftPinch * 1.1), 0, 1);
+        const gate = this.mode === "performance"
+            ? (kill ? 0 : 1)
+            : kill
+                ? 0
+                : clamp(Math.max(this.gate, control.leftPinch * 1.1, pluck ? 0.85 : 0), 0, 1);
         this.node.port.postMessage({
             type: "params",
+            mode: this.mode,
             freq: baseHz,
             gain: 1.0,
             cutoff,
@@ -124,13 +548,43 @@ export class DroneWorkletEngine {
             pulseDecay,
             tickAmt,
             tickDecay,
-            tickTone
+            tickTone,
+            guitarFreq,
+            guitarPluck: pluck,
+            guitarBright
         });
         this.node.port.postMessage({ type: "gate", gate });
     }
     handleMidi(events) {
         if (!events.length)
             return;
+        // In RAVE mode, use keys/MIDI to trigger the 909 kit (one-shots).
+        if (this.mode === "performance" && this.ctx) {
+            void this.ensureSamplesLoaded();
+            const t = this.ctx.currentTime + 0.02;
+            for (const e of events) {
+                if (e.type !== "noteon")
+                    continue;
+                const v = clamp(e.velocity, 0, 1);
+                const vel = 0.12 + 0.88 * v;
+                // Standard-ish mapping
+                // 36 kick, 38 hat, 39 clap, 40 perc/rim, 37 snare
+                if (e.note === 36 && this.sampleKick)
+                    this.fireKick(t, 0.95 * vel);
+                if (e.note === 38 && this.sampleHat)
+                    this.fireSample(t, this.sampleHat, 0.20 * vel, 1.03);
+                if (e.note === 39 && this.sampleClap)
+                    this.fireSample(t, this.sampleClap, 0.45 * vel, 1.0);
+                if (e.note === 37 && this.sampleSnare)
+                    this.fireSample(t, this.sampleSnare, 0.32 * vel, 1.0);
+                if (e.note === 40 && this.sampleRim)
+                    this.fireSample(t, this.sampleRim, 0.18 * vel, 1.0);
+                // Optional: open hat / crash-ish on FX key
+                if (e.note === 47 && this.sampleOpenHat)
+                    this.fireSample(t, this.sampleOpenHat, 0.22 * vel, 1.0);
+            }
+            return;
+        }
         for (const e of events) {
             if (e.type === "noteon") {
                 this.currentMidi = e.note;
@@ -149,10 +603,14 @@ export class DroneWorkletEngine {
         return null;
     }
     getPulse() {
-        return 0;
+        return this.pulse;
     }
     setMode(_mode) {
-        // Drone-only engine.
+        this.mode = _mode;
+        if (this.mode === "performance") {
+            void this.ensureSamplesLoaded();
+            this.ensureRaveScheduler();
+        }
     }
     setTrack(_track) {
         // Drone-only engine.
@@ -168,6 +626,6 @@ export class DroneWorkletEngine {
         this.currentMidi = null;
     }
     getLastError() {
-        return null;
+        return this.lastError;
     }
 }

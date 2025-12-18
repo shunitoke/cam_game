@@ -104,6 +104,8 @@ async function main() {
     hud.style.whiteSpace = "normal";
     hud.style.width = "420px";
     hud.style.maxWidth = "calc(100vw - 20px)";
+    hud.style.boxSizing = "border-box";
+    hud.style.overflow = "hidden";
     const gestureHint = el("div");
     gestureHint.style.padding = "8px 10px";
     gestureHint.style.borderRadius = "0px";
@@ -111,11 +113,15 @@ async function main() {
     gestureHint.style.border = "1px solid rgba(120, 255, 230, 0.18)";
     gestureHint.style.color = "rgba(223, 253, 245, 0.92)";
     gestureHint.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-    gestureHint.style.whiteSpace = "pre";
+    gestureHint.style.whiteSpace = "pre-wrap";
+    gestureHint.style.overflowWrap = "anywhere";
+    gestureHint.style.wordBreak = "break-word";
     gestureHint.style.opacity = "0.92";
     gestureHint.textContent = "Gestures\n- Pinch: hold\n- Move: change\n";
     const hudText = el("div");
-    hudText.style.whiteSpace = "pre";
+    hudText.style.whiteSpace = "pre-wrap";
+    hudText.style.overflowWrap = "anywhere";
+    hudText.style.wordBreak = "break-word";
     hudText.textContent = "HUD";
     const hudMeter = el("canvas");
     hudMeter.width = 420;
@@ -131,18 +137,22 @@ async function main() {
         if (mode === "drone") {
             gestureHint.textContent =
                 "Gestures (DRONE)\n" +
-                    "- 🤏🫲 Left pinch: BASS\n" +
-                    "- ↔️ Move L/R: pitch\n" +
-                    "- 🤏🫱 Add right hand + pinch: GUITAR\n" +
-                    "- 🫱⬆️⬇️ Right hand up/down: brightness\n";
+                    "- A/W/S/E... keys: pitch\n" +
+                    "- 🤏🫲 Left pinch: gate / level\n" +
+                    "- 🫲 X: BPM (slow pulse)\n" +
+                    "- 🫲 Y: envelope (atk/rel)\n" +
+                    "- 🫲🫱 Both hands: build = more pulse\n" +
+                    "- 🫱 X: guitar pitch\n" +
+                    "- 🤏🫱 Right pinch: pluck (guitar) + ticks\n" +
+                    "- 🫱 Y: brightness\n";
         }
         else {
             gestureHint.textContent =
                 "Gestures (RAVE)\n" +
-                    "- 🫲 Left hand: mix / flow\n" +
-                    "- 🫱 Right hand: space / FX\n" +
-                    "- 🫲🫱 Both hands: build / intensity\n" +
-                    "- 🤏 Pinch: intensity\n";
+                    "- 🫲 X: tempo (BPM)\n" +
+                    "- 🫱 Y: drum filter (LPF)\n" +
+                    "- 🤏🫱 Right pinch: hat density / open hat\n" +
+                    "- 🫲🫱 Both hands: build = more rumble\n";
         }
     };
     const hints = el("details", "hints");
@@ -154,7 +164,7 @@ async function main() {
     controlsRow.appendChild(startBtn);
     controlsRow.appendChild(stopBtn);
     const modeBtn = el("button");
-    modeBtn.textContent = "MODE: DRONE";
+    modeBtn.textContent = "MODE: RAVE";
     controlsRow.appendChild(modeBtn);
     controlsRow.appendChild(prevBtn);
     controlsRow.appendChild(nextBtn);
@@ -432,7 +442,7 @@ async function main() {
     const overlay = new HandOverlay2D(overlayCanvas);
     overlay.setMaxDpr(1.25);
     let audio = null;
-    const audioMode = "drone";
+    let audioMode = "performance";
     updateGestureHint(audioMode);
     const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
     tracker.setWantLandmarks(overlayOn);
@@ -1291,7 +1301,12 @@ async function main() {
     stopBtn.addEventListener("click", () => {
         void stop().catch((e) => console.error(e));
     });
-    modeBtn.disabled = true;
+    modeBtn.addEventListener("click", () => {
+        audioMode = audioMode === "drone" ? "performance" : "drone";
+        modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
+        updateGestureHint(audioMode);
+        audio?.setMode(audioMode);
+    });
     prevBtn.addEventListener("click", () => {
         const s = visuals.nextScene(-1);
         sceneBadge.textContent = `Scene: ${s.name}`;
@@ -1459,7 +1474,6 @@ async function main() {
         midiFlashT.set(note, midiLastEventAt);
         if (note === 47) {
             visuals.triggerBurst(0.08 + 0.12 * vel);
-            return;
         }
         audio.handleMidi([{ type: "noteon", channel: 0, note, velocity: vel }]);
     });

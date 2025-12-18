@@ -16,10 +16,33 @@ function midiToHz(n: number) {
   return 440 * Math.pow(2, (n - 69) / 12);
 }
 
+function makeDriveCurve(amount: number) {
+  const a = clamp(amount, 0, 1);
+  const n = 1024;
+  const curve = new Float32Array(n);
+  const k = 1 + a * 24;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(x * k);
+  }
+  return curve;
+}
+
 export class DroneWorkletEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
+
+  private limiter: DynamicsCompressorNode | null = null;
+  private preClip: GainNode | null = null;
+  private clipper: WaveShaperNode | null = null;
+  private postClip: GainNode | null = null;
+
+  private output: GainNode | null = null;
+
+  private analyser: AnalyserNode | null = null;
+  private waveBuf: Float32Array<ArrayBuffer> | null = null;
+  private fftBuf: Float32Array<ArrayBuffer> | null = null;
 
   // RAVE samples
   private samplesLoaded = false;
@@ -31,11 +54,43 @@ export class DroneWorkletEngine {
   private sampleSnare: AudioBuffer | null = null;
   private sampleRim: AudioBuffer | null = null;
 
+  // DRONE stems (real samples)
+  private droneStemsLoaded = false;
+  private loadingDroneStems: Promise<void> | null = null;
+  private sampleDroneBass: AudioBuffer | null = null;
+  private sampleDroneGuitar: AudioBuffer | null = null;
+
+  private droneBassEl: HTMLAudioElement | null = null;
+  private droneBassElSrc: MediaElementAudioSourceNode | null = null;
+
+  private droneBassSrc: AudioBufferSourceNode | null = null;
+  private droneBassGain: GainNode | null = null;
+  private droneBassLP: BiquadFilterNode | null = null;
+  private droneBassDrive: WaveShaperNode | null = null;
+
+  // DRONE guitar (single layer)
+  private droneGtrASrc: AudioBufferSourceNode | null = null;
+  private droneGtrAGain: GainNode | null = null;
+  private droneGtrAHP: BiquadFilterNode | null = null;
+  private droneGtrAPre: WaveShaperNode | null = null;
+  private droneGtrALP: BiquadFilterNode | null = null;
+  private droneGtrADrive: WaveShaperNode | null = null;
+  private droneGtrAComp: DynamicsCompressorNode | null = null;
+
   private lastError: string | null = null;
 
   private drumGain: GainNode | null = null;
   private drumLP: BiquadFilterNode | null = null;
   private drumHP: BiquadFilterNode | null = null;
+
+  // RAVE FX
+  private fxIn: GainNode | null = null;
+  private fxFilter: BiquadFilterNode | null = null;
+  private fxDrive: WaveShaperNode | null = null;
+  private fxOut: GainNode | null = null;
+  private fxDelay: DelayNode | null = null;
+  private fxDelayFb: GainNode | null = null;
+  private fxDelayMix: GainNode | null = null;
 
   private rumbleSend: GainNode | null = null;
   private rumbleDelay: DelayNode | null = null;
@@ -52,6 +107,8 @@ export class DroneWorkletEngine {
 
   private pulse = 0;
 
+  private fxHold = 0;
+
   private started = false;
 
   private mode: "performance" | "drone" = "performance";
@@ -63,8 +120,16 @@ export class DroneWorkletEngine {
 
   private lastParamsSentAt = 0;
 
+  private idleAmt = 0;
+
+  private lastDroneRate = 1;
+  private lastDroneRateA = 1;
+
   private async loadSample(ctx: AudioContext, url: string) {
     const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`fetch failed ${res.status} ${res.statusText}`);
+    }
     const buf = await res.arrayBuffer();
     return await ctx.decodeAudioData(buf);
   }
@@ -86,6 +151,247 @@ export class DroneWorkletEngine {
     const baseB = "https://cdn.jsdelivr.net/gh/Tonejs/audio@master/drum-samples/909";
     const baseC = "https://raw.githubusercontent.com/Tonejs/audio/master/drum-samples/909";
     return [`${baseLocal}/${file}`, `${baseA}/${file}`, `${baseB}/${file}`, `${baseC}/${file}`];
+  }
+
+  private droneStemUrls(file: string) {
+    // /public/samples/* is served at /samples/* (Vite). Filenames may include '#', so encode.
+    // Try browser-friendly formats first so users can just drop a converted .mp3/.ogg next to the .wav.
+    const dot = file.lastIndexOf(".");
+    const base = dot >= 0 ? file.slice(0, dot) : file;
+    const candidates = [`${base}.mp3`, `${base}.ogg`, `${base}.wav`];
+    return candidates.map((f) => `/samples/${encodeURIComponent(f)}`);
+  }
+
+  private ensureBassEl(ctx: AudioContext, url: string) {
+    if (this.droneBassEl && this.droneBassElSrc) return;
+
+    const el = new Audio();
+    el.crossOrigin = "anonymous";
+    el.src = url;
+    el.loop = true;
+    el.preload = "auto";
+
+    let src: MediaElementAudioSourceNode;
+    try {
+      src = ctx.createMediaElementSource(el);
+    } catch {
+      // Some browsers forbid multiple MediaElementSource nodes; fall back to reusing existing.
+      return;
+    }
+
+    this.droneBassEl = el;
+    this.droneBassElSrc = src;
+  }
+
+  private pickPlayableMediaUrl(urls: string[]) {
+    const test = new Audio();
+    for (const url of urls) {
+      const ext = url.split("?")[0]!.split("#")[0]!.split(".").pop()?.toLowerCase();
+      const mime = ext === "mp3" ? "audio/mpeg" : ext === "ogg" ? "audio/ogg" : ext === "wav" ? "audio/wav" : "";
+      if (!mime) continue;
+      try {
+        const ok = test.canPlayType(mime);
+        if (ok && ok !== "no") return url;
+      } catch {
+      }
+    }
+    // Fall back to first candidate.
+    return urls[0] ?? null;
+  }
+
+  private async ensureDroneStemsLoaded() {
+    if (!this.ctx) return;
+    // Allow retrying missing stems (e.g. guitar loaded but bass failed earlier).
+    if (this.sampleDroneBass && this.sampleDroneGuitar) {
+      this.droneStemsLoaded = true;
+      return;
+    }
+    if (this.loadingDroneStems) return this.loadingDroneStems;
+
+    const ctx = this.ctx;
+    this.loadingDroneStems = (async () => {
+      const bassName = "bass.ogg";
+      const gtrName = "guitar.ogg";
+
+      const bUrls = this.droneStemUrls(bassName);
+      const gUrls = this.droneStemUrls(gtrName);
+      const bUrl = bUrls[0]!;
+      const gUrl = gUrls[0]!;
+
+      let bass: AudioBuffer | null = null;
+      let gtr: AudioBuffer | null = null;
+      let bassErr: string | null = null;
+      let gtrErr: string | null = null;
+
+      if (!this.sampleDroneBass) {
+        try {
+          // Use direct load so we capture the actual failing status/decode error.
+          bass = await this.tryLoadSample(ctx, bUrls);
+        } catch (e) {
+          bassErr = String(e);
+
+          // If decodeAudioData fails due to WAV encoding (common with float/24-bit),
+          // fall back to HTMLAudioElement which uses the browser's media decoder.
+          if (/EncodingError/i.test(bassErr) || /decodeAudioData/i.test(bassErr)) {
+            try {
+              const u = this.pickPlayableMediaUrl(bUrls);
+              if (u) this.ensureBassEl(ctx, u);
+              bassErr = bassErr + " (fallback: HTMLAudioElement)";
+            } catch {
+            }
+          }
+        }
+      }
+      try {
+        if (!this.sampleDroneGuitar) {
+          gtr = await this.tryLoadSample(ctx, gUrls);
+        }
+      } catch (e) {
+        gtrErr = String(e);
+      }
+
+      if (!bass || !gtr) {
+        this.lastError = `Drone stems load. Bass: ${bass ? "ok" : `fail (${bUrl})`} ${bassErr ?? ""} | Guitar: ${gtr ? "ok" : `fail (${gUrl})`} ${gtrErr ?? ""}`;
+      }
+
+      // Allow partial availability (so at least guitar can play even if bass fails).
+      if (bass) this.sampleDroneBass = bass;
+      if (gtr) this.sampleDroneGuitar = gtr;
+      this.droneStemsLoaded = !!(this.sampleDroneBass || this.sampleDroneGuitar || this.droneBassElSrc);
+
+      if (this.sampleDroneBass && this.sampleDroneGuitar) {
+        this.lastError = null;
+      }
+    })();
+
+    try {
+      await this.loadingDroneStems;
+    } finally {
+      this.loadingDroneStems = null;
+    }
+  }
+
+  private stopDroneStems() {
+    const stopSrc = (src: AudioBufferSourceNode | null) => {
+      if (!src) return;
+      try {
+        src.stop();
+      } catch {
+      }
+      try {
+        src.disconnect();
+      } catch {
+      }
+    };
+
+    stopSrc(this.droneBassSrc);
+    stopSrc(this.droneGtrASrc);
+    this.droneBassSrc = null;
+    this.droneGtrASrc = null;
+
+    try {
+      this.droneBassEl?.pause();
+    } catch {
+    }
+
+    try {
+      this.droneBassElSrc?.disconnect();
+    } catch {
+    }
+  }
+
+  private ensureDroneStemsPlaying() {
+    if (!this.ctx) return;
+    if (!this.master) return;
+    if (!this.sampleDroneBass && !this.sampleDroneGuitar && !this.droneBassElSrc) return;
+
+    const ctx = this.ctx;
+
+    // Bass FX chain must exist for both decoded buffer and HTMLAudioElement fallback.
+    if ((this.sampleDroneBass || this.droneBassElSrc) && !this.droneBassGain) {
+      this.droneBassGain = ctx.createGain();
+      this.droneBassGain.gain.value = 0.0;
+      this.droneBassLP = ctx.createBiquadFilter();
+      this.droneBassLP.type = "lowpass";
+      this.droneBassLP.frequency.value = 220;
+      this.droneBassLP.Q.value = 0.5;
+      this.droneBassDrive = ctx.createWaveShaper();
+      this.droneBassDrive.curve = makeDriveCurve(0.35);
+      this.droneBassDrive.oversample = "2x";
+      this.droneBassGain.connect(this.droneBassLP);
+      this.droneBassLP.connect(this.droneBassDrive);
+      this.droneBassDrive.connect(this.master);
+    }
+
+    if (this.sampleDroneGuitar && !this.droneGtrAGain) {
+      // Guitar (right hand): Sunn-ish amp chain
+      this.droneGtrAGain = ctx.createGain();
+      this.droneGtrAGain.gain.value = 0.0;
+      this.droneGtrAHP = ctx.createBiquadFilter();
+      this.droneGtrAHP.type = "highpass";
+      this.droneGtrAHP.frequency.value = 55;
+      this.droneGtrAHP.Q.value = 0.8;
+
+      // Preamp fuzz stage
+      this.droneGtrAPre = ctx.createWaveShaper();
+      this.droneGtrAPre.curve = makeDriveCurve(0.85);
+      this.droneGtrAPre.oversample = "4x";
+
+      this.droneGtrALP = ctx.createBiquadFilter();
+      this.droneGtrALP.type = "lowpass";
+      this.droneGtrALP.frequency.value = 2200;
+      this.droneGtrALP.Q.value = 0.55;
+      this.droneGtrADrive = ctx.createWaveShaper();
+      this.droneGtrADrive.curve = makeDriveCurve(0.92);
+      this.droneGtrADrive.oversample = "4x";
+      this.droneGtrAComp = ctx.createDynamicsCompressor();
+      this.droneGtrAComp.threshold.value = -28;
+      this.droneGtrAComp.knee.value = 14;
+      this.droneGtrAComp.ratio.value = 10;
+      this.droneGtrAComp.attack.value = 0.010;
+      this.droneGtrAComp.release.value = 0.34;
+      this.droneGtrAGain.connect(this.droneGtrAHP);
+      this.droneGtrAHP.connect(this.droneGtrAPre);
+      this.droneGtrAPre.connect(this.droneGtrALP);
+      this.droneGtrALP.connect(this.droneGtrADrive);
+      this.droneGtrADrive.connect(this.droneGtrAComp);
+      this.droneGtrAComp.connect(this.master);
+    }
+
+    if (this.sampleDroneBass && this.droneBassGain && !this.droneBassSrc) {
+      const s = ctx.createBufferSource();
+      s.buffer = this.sampleDroneBass;
+      s.loop = true;
+      s.playbackRate.value = 1.0;
+      s.connect(this.droneBassGain);
+      s.start();
+      this.droneBassSrc = s;
+    }
+
+    // Bass fallback via HTMLAudioElement if decodeAudioData failed.
+    if (!this.sampleDroneBass && this.droneBassElSrc && this.droneBassGain) {
+      try {
+        this.droneBassElSrc.connect(this.droneBassGain);
+      } catch {
+      }
+      try {
+        void this.droneBassEl?.play();
+      } catch {
+      }
+    }
+
+    if (this.sampleDroneGuitar && this.droneGtrAGain && !this.droneGtrASrc) {
+      const s = ctx.createBufferSource();
+      s.buffer = this.sampleDroneGuitar;
+      s.loop = true;
+      s.playbackRate.value = 1.0;
+      s.connect(this.droneGtrAGain);
+      s.start();
+      this.droneGtrASrc = s;
+      this.lastDroneRateA = 1;
+    }
+
+    // (single guitar only)
   }
 
   private ensureRaveScheduler() {
@@ -293,13 +599,46 @@ export class DroneWorkletEngine {
     this.node = node;
 
     const master = ctx.createGain();
-    master.gain.value = 0.9;
+    master.gain.value = 0.55;
     this.master = master;
 
-    node.connect(master);
-    master.connect(ctx.destination);
+    this.limiter = ctx.createDynamicsCompressor();
+    this.limiter.threshold.value = -16;
+    this.limiter.knee.value = 6;
+    this.limiter.ratio.value = 20;
+    this.limiter.attack.value = 0.001;
+    this.limiter.release.value = 0.18;
 
-    // RAVE drum chain
+    this.preClip = ctx.createGain();
+    this.preClip.gain.value = 1.0;
+
+    this.clipper = ctx.createWaveShaper();
+    this.clipper.curve = makeDriveCurve(0.18);
+    this.clipper.oversample = "4x";
+
+    this.postClip = ctx.createGain();
+    this.postClip.gain.value = 1.0;
+
+    this.analyser = ctx.createAnalyser();
+    this.analyser.fftSize = 1024;
+    this.analyser.smoothingTimeConstant = 0.82;
+
+    this.output = ctx.createGain();
+    this.output.gain.value = 0.12;
+
+    node.connect(master);
+    master.connect(this.limiter);
+    this.limiter.connect(this.preClip);
+    this.preClip.connect(this.clipper);
+    this.clipper.connect(this.postClip);
+    this.postClip.connect(this.analyser);
+    this.analyser.connect(this.output);
+    this.output.connect(ctx.destination);
+
+    // Apply mode-dependent gain staging/clip character.
+    this.applyModeGainStaging();
+
+    // RAVE drum chain -> FX bus -> master
     this.drumGain = ctx.createGain();
     this.drumGain.gain.value = 0.95;
     this.drumHP = ctx.createBiquadFilter();
@@ -309,9 +648,43 @@ export class DroneWorkletEngine {
     this.drumLP.type = "lowpass";
     this.drumLP.frequency.value = 12000;
     this.drumLP.Q.value = 0.2;
+
+    this.fxIn = ctx.createGain();
+    this.fxIn.gain.value = 1.0;
+    this.fxFilter = ctx.createBiquadFilter();
+    this.fxFilter.type = "lowpass";
+    this.fxFilter.frequency.value = 14000;
+    this.fxFilter.Q.value = 0.6;
+    this.fxDrive = ctx.createWaveShaper();
+    this.fxDrive.curve = makeDriveCurve(0.0);
+    this.fxDrive.oversample = "2x";
+    this.fxOut = ctx.createGain();
+    this.fxOut.gain.value = 0.95;
+
+    this.fxDelay = ctx.createDelay(1.5);
+    this.fxDelay.delayTime.value = 0.25;
+    this.fxDelayFb = ctx.createGain();
+    this.fxDelayFb.gain.value = 0.35;
+    this.fxDelayMix = ctx.createGain();
+    this.fxDelayMix.gain.value = 0.0;
+
+    // dry path
     this.drumGain.connect(this.drumHP);
     this.drumHP.connect(this.drumLP);
-    this.drumLP.connect(master);
+    this.drumLP.connect(this.fxIn);
+
+    this.fxIn.connect(this.fxFilter);
+    this.fxFilter.connect(this.fxDrive);
+    this.fxDrive.connect(this.fxOut);
+    this.fxOut.connect(master);
+
+    // delay send
+    this.fxIn.connect(this.fxDelay);
+    this.fxDelay.connect(this.fxDelayMix);
+    this.fxDelayMix.connect(master);
+    // feedback
+    this.fxDelay.connect(this.fxDelayFb);
+    this.fxDelayFb.connect(this.fxDelay);
 
     // Rumble/space bus: filtered feedback delay
     this.rumbleSend = ctx.createGain();
@@ -351,6 +724,7 @@ export class DroneWorkletEngine {
 
     // Kick off sample loading (async) and scheduler.
     void this.ensureSamplesLoaded();
+    void this.ensureDroneStemsLoaded();
     this.ensureRaveScheduler();
   }
 
@@ -399,6 +773,7 @@ export class DroneWorkletEngine {
     if (!this.started) return;
 
     this.stopRaveScheduler();
+    this.stopDroneStems();
 
     try {
       this.node?.disconnect();
@@ -411,13 +786,53 @@ export class DroneWorkletEngine {
     }
 
     try {
+      this.limiter?.disconnect();
+    } catch {
+    }
+
+    try {
+      this.preClip?.disconnect();
+    } catch {
+    }
+
+    try {
+      this.clipper?.disconnect();
+    } catch {
+    }
+
+    try {
+      this.postClip?.disconnect();
+    } catch {
+    }
+
+    try {
+      this.analyser?.disconnect();
+    } catch {
+    }
+
+    try {
+      this.output?.disconnect();
+    } catch {
+    }
+
+    try {
       await this.ctx?.close();
     } catch {
     }
 
     this.ctx = null;
+    this.lastParamsSentAt = 0;
+    this.idleAmt = 0;
     this.node = null;
     this.master = null;
+    this.limiter = null;
+    this.preClip = null;
+    this.clipper = null;
+    this.analyser = null;
+    this.postClip = null;
+    this.output = null;
+    this.waveBuf = null;
+    this.fftBuf = null;
     this.drumGain = null;
     this.drumLP = null;
     this.drumHP = null;
@@ -427,6 +842,22 @@ export class DroneWorkletEngine {
     this.rumbleLP = null;
     this.rumbleHP = null;
     this.rumbleOut = null;
+
+    this.droneStemsLoaded = false;
+    this.loadingDroneStems = null;
+    this.sampleDroneBass = null;
+    this.sampleDroneGuitar = null;
+    this.droneBassEl = null;
+    this.droneBassElSrc = null;
+    this.droneBassGain = null;
+    this.droneBassLP = null;
+    this.droneBassDrive = null;
+    this.droneGtrAGain = null;
+    this.droneGtrAHP = null;
+    this.droneGtrAPre = null;
+    this.droneGtrALP = null;
+    this.droneGtrADrive = null;
+    this.droneGtrAComp = null;
     this.started = false;
   }
 
@@ -468,28 +899,34 @@ export class DroneWorkletEngine {
     const release = expRange01(1 - control.leftY, 0.06, 0.9);
     const detune = clamp(0.0015 + control.build * 0.008 + control.rightSpeed * 0.004, 0, 0.02);
     const sub = clamp(0.12 + control.build * 0.55, 0, 0.85);
-    const noise = clamp(0.01 + control.rightPinch * 0.08, 0, 0.2);
+    const noiseRaw = clamp(0.01 + control.rightPinch * 0.08, 0, 0.2);
+    const noise = this.mode === "drone" ? 0 : noiseRaw;
 
     // Delay as space: right pinch opens mix, build increases feedback.
     const delayTime = expRange01(control.rightX, 0.09, 0.42);
     const delayFb = clamp(0.18 + control.build * 0.55, 0, 0.86);
-    const delayMix = clamp(0.03 + control.rightPinch * 0.22, 0, 0.35);
+    const delayMixRaw = clamp(0.03 + control.rightPinch * 0.22, 0, 0.35);
+    const delayMix = this.mode === "drone" ? 0.08 + 0.12 * clamp(control.build, 0, 1) : delayMixRaw;
 
     // Rhythm (worklet stepper): slow pulse you can "wake up" with build.
     const bpm = expRange01(control.leftX, 44, 92);
-    const pulseAmt = clamp(0.04 + control.build * 0.55, 0, 0.85);
+    const pulseAmtRaw = clamp(0.04 + control.build * 0.55, 0, 0.85);
+    const pulseAmt = this.mode === "drone" ? 0 : pulseAmtRaw;
     const pulseDecay = expRange01(1 - control.leftY, 0.04, 0.26);
 
-    const tickAmt = clamp(0.00 + control.rightPinch * 0.55, 0, 0.9);
+    const tickAmtRaw = clamp(0.00 + control.rightPinch * 0.55, 0, 0.9);
+    const tickAmt = this.mode === "drone" ? 0 : tickAmtRaw;
     const tickDecay = expRange01(1 - control.rightY, 0.01, 0.11);
     const tickTone = expRange01(control.rightY, 400, 5200);
 
     // Guitar (right hand): pinch = pluck trigger, X = pitch, Y = brightness
-    const guitarFreq = expRange01(control.rightX, 82, 330);
+    const guitarFreq = expRange01(control.rightX, 82, 392);
     const guitarBright = clamp(control.rightY, 0, 1);
     const rPinch = clamp(control.rightPinch, 0, 1);
-    const pluck = rPinch > 0.65 && this.lastRightPinch <= 0.65 ? 1 : 0;
+    const pluckRaw = rPinch > 0.65 && this.lastRightPinch <= 0.65 ? 1 : 0;
+    const pluck = this.mode === "drone" ? 0 : pluckRaw;
     this.lastRightPinch = rPinch;
+    const guitarGate = this.mode === "drone" ? rPinch : 0;
 
     // RAVE: map tempo + drum tone to hands
     if (this.mode === "performance") {
@@ -499,6 +936,30 @@ export class DroneWorkletEngine {
       }
       if (this.drumGain) {
         this.drumGain.gain.value = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
+      }
+
+      // FX: right hand is the DJ macro
+      // Hold right pinch to engage FX strongly (filter + drive + delay throw)
+      const pinch = clamp(control.rightPinch, 0, 1);
+      this.fxHold = Math.max(0, Math.min(1, this.fxHold + (pinch - this.fxHold) * 0.15));
+
+      const fx = this.fxHold;
+      const cut = expRange01(1 - control.rightY, 180, 14000);
+      const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1);
+      if (this.fxFilter) {
+        this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
+        this.fxFilter.frequency.value = cut;
+        this.fxFilter.Q.value = q;
+      }
+
+      if (this.fxDrive) {
+        (this.fxDrive as any).curve = makeDriveCurve(0.15 + 0.85 * fx);
+      }
+
+      if (this.fxDelay && this.fxDelayFb && this.fxDelayMix) {
+        this.fxDelay.delayTime.value = expRange01(control.rightX, 0.12, 0.38);
+        this.fxDelayFb.gain.value = 0.25 + 0.55 * fx;
+        this.fxDelayMix.gain.value = 0.00 + 0.55 * fx;
       }
 
       if (this.rumbleSend && this.rumbleFb && this.rumbleDelay) {
@@ -516,18 +977,102 @@ export class DroneWorkletEngine {
 
     // Level: DRONE is gated by left pinch, RAVE plays by itself.
     const kill = !!control.kill;
+
+    // No-hands idle fade (smooth): when no hands in frame, play quietly + show prompt in UI.
+    const handsCount = control.hands?.count ?? 0;
+    const idleTarget = handsCount > 0 ? 0 : 1;
+    this.idleAmt = this.idleAmt + (idleTarget - this.idleAmt) * 0.10;
     const gate =
       this.mode === "performance"
         ? (kill ? 0 : 1)
         : kill
           ? 0
-          : clamp(Math.max(this.gate, control.leftPinch * 1.1), 0, 1);
+          : clamp(Math.max(this.gate, control.leftPinch * 1.1, pluck ? 0.85 : 0), 0, 1);
+
+    // DRONE stems: real bass + real guitar
+    if (this.mode === "drone") {
+      void this.ensureDroneStemsLoaded();
+      if (this.droneStemsLoaded) {
+        this.ensureDroneStemsPlaying();
+        const ctx = this.ctx;
+        if (ctx) {
+          const t = ctx.currentTime;
+
+          if (this.droneBassGain) {
+            // Bass (left hand): pinch = level. Silent at 0.
+            const live = 0.70 * Math.pow(clamp(control.leftPinch, 0, 1), 1.25);
+            const idle = 0.10;
+            const bassTarget = kill ? 0 : (live * (1 - this.idleAmt) + idle * this.idleAmt);
+            try {
+              this.droneBassGain.gain.setTargetAtTime(bassTarget, t, 0.08);
+            } catch {
+              this.droneBassGain.gain.value = bassTarget;
+            }
+          }
+          if (this.droneBassLP) {
+            // Bass tone: left Y
+            this.droneBassLP.frequency.value = expRange01(clamp(control.leftY, 0, 1), 90, 280);
+          }
+
+          // Guitar (right hand): full manual control
+          {
+            const p = clamp(control.rightPinch, 0, 1);
+            const bright = clamp(control.rightY, 0, 1);
+
+            // Continuous control: pinch = level. Silent at 0.
+            const live = 0.65 * Math.pow(p, 1.25);
+            const idle = 0.06;
+            const g = kill ? 0 : (live * (1 - this.idleAmt) + idle * this.idleAmt);
+            if (this.droneGtrAGain) {
+              try {
+                this.droneGtrAGain.gain.setTargetAtTime(g, t, 0.10);
+              } catch {
+                this.droneGtrAGain.gain.value = g;
+              }
+            }
+            if (this.droneGtrASrc) {
+              // Total drone: force sub-low playbackRate (down-pitched Sunn O))) bed).
+              // Right X gives small drift in this low range.
+              const rate = expRange01(control.rightX, 0.12, 0.28);
+              if (Math.abs(rate - this.lastDroneRateA) > 0.004) {
+                this.lastDroneRateA = rate;
+                try {
+                  this.droneGtrASrc.playbackRate.setTargetAtTime(rate, t, 0.10);
+                } catch {
+                  this.droneGtrASrc.playbackRate.value = rate;
+                }
+              }
+            }
+            if (this.droneGtrALP && this.droneGtrADrive && this.droneGtrAPre) {
+              // Cab/brightness
+              this.droneGtrALP.frequency.value = expRange01(bright, 900, 2600);
+
+              // Pinch mostly adds gain + more fuzz, not pitch.
+              const fuzzMul = 1 - 0.55 * this.idleAmt;
+              this.droneGtrAPre.curve = makeDriveCurve((0.65 + 0.30 * p) * fuzzMul);
+              this.droneGtrADrive.curve = makeDriveCurve((0.75 + 0.25 * p) * fuzzMul);
+            }
+          }
+        }
+      }
+    } else {
+      // Not in drone mode: silence stems.
+      if (this.droneBassGain) this.droneBassGain.gain.value = 0;
+      if (this.droneGtrAGain) this.droneGtrAGain.gain.value = 0;
+      this.stopDroneStems();
+    }
+
+    // Mute worklet's own DRONE synthesis when real stems are active.
+    const haveBass = !!this.sampleDroneBass || !!this.droneBassElSrc;
+    const haveGtr = !!this.sampleDroneGuitar;
+    const muteWorklet = this.mode === "drone" && haveBass && haveGtr;
+    const workletGain = muteWorklet ? 0 : 1.0;
 
     this.node.port.postMessage({
       type: "params",
       mode: this.mode,
       freq: baseHz,
-      gain: 1.0,
+      gain: workletGain,
       cutoff,
       drive,
       lfoHz,
@@ -548,7 +1093,8 @@ export class DroneWorkletEngine {
       tickTone,
       guitarFreq,
       guitarPluck: pluck,
-      guitarBright
+      guitarBright,
+      guitarGate
     });
 
     this.node.port.postMessage({ type: "gate", gate });
@@ -599,7 +1145,28 @@ export class DroneWorkletEngine {
 
   // Compatibility helpers for existing HUD code.
   getWaveforms() {
-    return null;
+    if (!this.analyser) return null;
+
+    const fftSize = this.analyser.frequencyBinCount;
+    if (!this.fftBuf || this.fftBuf.length !== fftSize) {
+      this.fftBuf = new Float32Array(fftSize) as unknown as Float32Array<ArrayBuffer>;
+    }
+    if (!this.waveBuf || this.waveBuf.length !== 256) {
+      this.waveBuf = new Float32Array(256) as unknown as Float32Array<ArrayBuffer>;
+    }
+
+    try {
+      this.analyser.getFloatFrequencyData(this.fftBuf);
+      this.analyser.getFloatTimeDomainData(this.waveBuf);
+    } catch {
+      return null;
+    }
+
+    // Provide at least kick+fft so HUD meter and WaveLab have something meaningful.
+    return {
+      kick: this.waveBuf,
+      fft: this.fftBuf
+    };
   }
 
   getPulse() {
@@ -608,9 +1175,25 @@ export class DroneWorkletEngine {
 
   setMode(_mode: "performance" | "drone") {
     this.mode = _mode;
+    this.applyModeGainStaging();
     if (this.mode === "performance") {
       void this.ensureSamplesLoaded();
       this.ensureRaveScheduler();
+    }
+  }
+
+  private applyModeGainStaging() {
+    // Goal: keep perceived loudness consistent between modes.
+    // - performance: cleaner, less clip drive
+    // - drone: more overload character, but compensated down post-clip
+    if (this.mode === "drone") {
+      if (this.preClip) this.preClip.gain.value = 2.2;
+      if (this.clipper) this.clipper.curve = makeDriveCurve(0.55);
+      if (this.postClip) this.postClip.gain.value = 0.55;
+    } else {
+      if (this.preClip) this.preClip.gain.value = 1.0;
+      if (this.clipper) this.clipper.curve = makeDriveCurve(0.18);
+      if (this.postClip) this.postClip.gain.value = 1.0;
     }
   }
 
