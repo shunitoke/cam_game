@@ -75,7 +75,7 @@ export class AudioEngine {
     midiScheduleT = 0;
     lastParamUpdateT = 0;
     paramUpdateIntervalMs = 50;
-    master = new Tone.Gain(1.25);
+    master = new Tone.Gain(0.6);
     limiter = new Tone.Limiter(-0.5);
     drive = new Tone.Distortion(0.1);
     filter = new Tone.Filter(900, "lowpass");
@@ -246,7 +246,7 @@ export class AudioEngine {
     sceneId = "particles";
     midiMod = 0;
     midiRev = 0;
-    midiSampleGain = new Tone.Gain(1.15);
+    midiSampleGain = new Tone.Gain(0.9);
     midiSampleFilter = new Tone.Filter({ type: "lowpass", frequency: 9000, Q: 0.65 });
     midiCrush = new Tone.BitCrusher(8);
     midiCrushAmount = 0;
@@ -1585,7 +1585,7 @@ export class AudioEngine {
                 dt = 1.2;
             this.droneBeatNextT = now + dt;
         }
-        const targetMaster = control.kill ? 0.0001 : 0.65;
+        const targetMaster = control.kill ? 0.0001 : 0.5;
         this.master.gain.rampTo(targetMaster, 0.06);
     }
     updatePerformance(control) {
@@ -1702,7 +1702,7 @@ export class AudioEngine {
         this.lead.volume.value = lerp(-22, -14, clamp01(control.build)) + (inBreak ? -4.0 : inDrop ? 0.6 : 0);
         this.simpleLead.volume.value = lerp(-26, -16, clamp01(build));
         this.pad.volume.value = lerp(-30, -18, clamp01(build));
-        const targetMaster = control.kill ? 0.0001 : 0.9;
+        const targetMaster = control.kill ? 0.0001 : 0.65;
         this.master.gain.rampTo(targetMaster, 0.06);
     }
     getWaveforms() {

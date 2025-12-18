@@ -191,7 +191,7 @@ export class DroneWorkletEngine {
       if (!mime) continue;
       try {
         const ok = test.canPlayType(mime);
-        if (ok && ok !== "no") return url;
+        if (ok === "probably" || ok === "maybe") return url;
       } catch {
       }
     }

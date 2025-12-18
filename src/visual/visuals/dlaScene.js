@@ -189,17 +189,20 @@ export class DlaScene {
         const build = clamp01(control.build);
         const burstKick = clamp01(kickEnv + this.burst);
         // Growth speed: keep it stable on weak GPUs, but let it ramp up hard.
-        const speed = clamp01(0.15 + energy * 0.55 + build * 0.55 + burstKick * 0.75);
+        const speed = clamp01(0.02 + energy * 0.25 + build * 0.65 + burstKick * 0.45);
         const biasDown = lerp(0.22, 0.44, clamp01(0.15 + build * 0.85 + burstKick * 0.55));
         const biasUp = lerp(0.16, 0.10, clamp01(build * 0.7 + burstKick * 0.5));
         const biasSide = (1.0 - (biasDown + biasUp)) * 0.5;
-        const subSteps = Math.floor((this.safeMode ? 7 : 10) + lerp(0, this.safeMode ? 8 : 14, speed));
-        const walkersToStep = Math.min(this.walkers.length, Math.floor((this.safeMode ? 45 : 90) + lerp(0, this.safeMode ? 35 : 85, speed)));
+        // Scale work to dt so growth rate is closer to "per second" than "per frame".
+        const dtScale = clamp01(control.dt * 60);
+        // Keep per-frame work low by default, and let Build/Burst ramp it up.
+        const subSteps = Math.max(1, Math.floor((this.safeMode ? 2 : 3) + lerp(0, this.safeMode ? 4 : 6, speed)));
+        const walkersToStep = Math.min(this.walkers.length, Math.max(1, Math.floor(dtScale * ((this.safeMode ? 10 : 16) + lerp(0, this.safeMode ? 18 : 28, speed)))));
         const stickR = burstKick > 0.50 ? 2 : 1;
         const w = this.gridW;
         const h = this.gridH;
         // Extra passes are faster than increasing subSteps too much.
-        const passes = 1 + Math.floor(lerp(0, this.safeMode ? 1 : 2, speed));
+        const passes = 1 + Math.floor(lerp(0, 1, speed));
         let any = false;
         for (let pass = 0; pass < passes; pass++) {
             for (let i = 0; i < walkersToStep; i++) {
