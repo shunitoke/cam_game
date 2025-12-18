@@ -18,6 +18,9 @@ import { RrtScene } from "./visuals/rrtScene";
 import { RandomArboretumScene } from "./visuals/randomArboretumScene";
 import { KochScene } from "./visuals/kochScene";
 import { DlaScene } from "./visuals/dlaScene";
+import { BosWarpScene } from "./visuals/bosWarpScene";
+import { KaleidoscopeScene } from "./visuals/kaleidoscopeScene";
+import { MetaballsScene } from "./visuals/metaballsScene";
 
 export type SceneDef = { id: string; name: string };
 
@@ -44,6 +47,11 @@ export class VisualEngine {
   private postTime = 0;
 
   private safeMode = false;
+  private renderEnabled = true;
+  private renderScale = 1;
+  private dpr = 1;
+  private lastInternalW = 1;
+  private lastInternalH = 1;
 
   private scenes: Array<{ def: SceneDef; scene: SceneImpl }>;
 
@@ -61,8 +69,11 @@ export class VisualEngine {
       alpha: false,
       powerPreference: "low-power"
     });
-    this.renderer.setPixelRatio(Math.min(1.25, window.devicePixelRatio || 1));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    // Keep renderer pixel ratio at 1 and bake DPR + SAFE scaling into the internal size.
+    // This allows SAFE mode to reduce GPU workload while keeping the canvas CSS fullscreen.
+    this.renderer.setPixelRatio(1);
+    this.dpr = Math.min(1.25, window.devicePixelRatio || 1);
+    this.renderer.setSize(Math.floor(window.innerWidth * this.dpr), Math.floor(window.innerHeight * this.dpr), false);
 
     this.camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 40);
     this.camera.position.set(0, 0, 2.2);
@@ -244,8 +255,12 @@ export class VisualEngine {
     const koch = new KochScene();
     const dla = new DlaScene();
 
+    const bosWarp = new BosWarpScene();
+    const kalei = new KaleidoscopeScene();
+    const metaballs = new MetaballsScene();
+
     // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla] as any[]) {
+    for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs] as any[]) {
       if (typeof sc.setRenderer === "function") {
         sc.setRenderer(this.renderer);
       }
@@ -268,6 +283,9 @@ export class VisualEngine {
       { def: { id: "rrt", name: "RRT" }, scene: rrt },
       { def: { id: "arboretum", name: "Arboretum" }, scene: arbor },
       { def: { id: "koch", name: "Koch" }, scene: koch },
+      { def: { id: "bosWarp", name: "BoS Warp" }, scene: bosWarp },
+      { def: { id: "kaleidoscope", name: "Kaleidoscope" }, scene: kalei },
+      { def: { id: "metaballs", name: "Metaballs" }, scene: metaballs },
       { def: { id: "ascii", name: "ASCII" }, scene: ascii }
     ];
 
@@ -291,6 +309,8 @@ export class VisualEngine {
   }
 
   update(control: ControlState) {
+    if (!this.renderEnabled) return;
+
     const s = this.scenes[this.sceneIndex]!.scene;
     s.update(control);
 
@@ -316,12 +336,22 @@ export class VisualEngine {
     this.renderer.render(this.postScene, this.postCamera);
   }
 
+  setRenderEnabled(on: boolean) {
+    this.renderEnabled = on;
+  }
+
+  getRenderEnabled(): boolean {
+    return this.renderEnabled;
+  }
+
   setSafeMode(on: boolean) {
     this.safeMode = on;
+    this.renderScale = on ? 0.65 : 1;
     const s: any = this.scenes[this.sceneIndex]!.scene as any;
     if (typeof s.setSafeMode === "function") {
       s.setSafeMode(on);
     }
+    this.onResize();
   }
 
   reset() {
@@ -343,11 +373,19 @@ export class VisualEngine {
     const h = window.innerHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
 
-    this.rt.setSize(w, h);
+    this.dpr = Math.min(1.25, window.devicePixelRatio || 1);
+    const scale = this.renderScale;
 
-    this.postMat.uniforms.uInvRes.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+    const iw = Math.max(1, Math.floor(w * this.dpr * scale));
+    const ih = Math.max(1, Math.floor(h * this.dpr * scale));
+    this.lastInternalW = iw;
+    this.lastInternalH = ih;
+
+    this.renderer.setSize(iw, ih, false);
+    this.rt.setSize(iw, ih);
+
+    this.postMat.uniforms.uInvRes.value.set(1 / Math.max(1, iw), 1 / Math.max(1, ih));
 
     for (const s of this.scenes) {
       if (typeof s.scene.onResize === "function") {

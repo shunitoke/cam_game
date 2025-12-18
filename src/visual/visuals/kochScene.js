@@ -122,8 +122,8 @@ export class KochScene {
         if (this.pos.length < needed) {
             // Grow buffer (avoid constant reallocations). Rebind attribute to new array.
             this.pos = new Float32Array(needed);
-            this.posAttr.array = this.pos;
-            this.posAttr.needsUpdate = true;
+            this.posAttr = new THREE.BufferAttribute(this.pos, 3);
+            this.geom.setAttribute("position", this.posAttr);
         }
         let wri = 0;
         for (let iy = 0; iy < ty; iy++) {
@@ -144,6 +144,7 @@ export class KochScene {
         this.posCount = wri / 3;
         this.geom.setDrawRange(0, this.posCount);
         this.posAttr.needsUpdate = true;
+        this.geom.computeBoundingSphere();
     }
     update(control) {
         this.t += control.dt;

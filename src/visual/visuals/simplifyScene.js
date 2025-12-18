@@ -54,6 +54,9 @@ export class SimplifyScene {
     line;
     geom;
     mat;
+    pos;
+    posAttr;
+    posCount = 0;
     t = 0;
     burst = 0;
     safeMode = false;
@@ -67,7 +70,10 @@ export class SimplifyScene {
         this.scene.background = new THREE.Color(0x05060a);
         this.mat = new THREE.LineBasicMaterial({ color: 0xc8fff4, transparent: true, opacity: 0.9 });
         this.geom = new THREE.BufferGeometry();
-        this.geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+        this.pos = new Float32Array(0);
+        this.posAttr = new THREE.BufferAttribute(this.pos, 3);
+        this.geom.setAttribute("position", this.posAttr);
+        this.geom.setDrawRange(0, 0);
         this.line = new THREE.Line(this.geom, this.mat);
         this.line.position.z = -0.35;
         this.scene.add(this.line);
@@ -118,15 +124,23 @@ export class SimplifyScene {
     rebuild(eps) {
         const eps2 = eps * eps;
         this.simplified = rdp(this.raw, eps2);
-        const out = new Float32Array(this.simplified.length * 3);
+        const needed = this.simplified.length * 3;
+        if (this.pos.length < needed) {
+            this.pos = new Float32Array(needed);
+            this.posAttr = new THREE.BufferAttribute(this.pos, 3);
+            this.geom.setAttribute("position", this.posAttr);
+        }
         for (let i = 0; i < this.simplified.length; i++) {
             const p = this.simplified[i];
             const o = i * 3;
-            out[o + 0] = p.x;
-            out[o + 1] = p.y;
-            out[o + 2] = 0;
+            this.pos[o + 0] = p.x;
+            this.pos[o + 1] = p.y;
+            this.pos[o + 2] = 0;
         }
-        this.geom.setAttribute("position", new THREE.BufferAttribute(out, 3));
+        this.posCount = this.simplified.length;
+        this.geom.setDrawRange(0, this.posCount);
+        this.posAttr.needsUpdate = true;
+        this.geom.computeBoundingSphere();
     }
     update(control) {
         this.t += control.dt;

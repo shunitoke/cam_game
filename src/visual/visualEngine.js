@@ -15,8 +15,10 @@ import { LloydScene } from "./visuals/lloydScene";
 import { RrtScene } from "./visuals/rrtScene";
 import { RandomArboretumScene } from "./visuals/randomArboretumScene";
 import { KochScene } from "./visuals/kochScene";
-import { CircleTreeScene } from "./visuals/circleTreeScene";
 import { DlaScene } from "./visuals/dlaScene";
+import { BosWarpScene } from "./visuals/bosWarpScene";
+import { KaleidoscopeScene } from "./visuals/kaleidoscopeScene";
+import { MetaballsScene } from "./visuals/metaballsScene";
 export class VisualEngine {
     canvas;
     renderer;
@@ -214,10 +216,12 @@ export class VisualEngine {
         const rrt = new RrtScene();
         const arbor = new RandomArboretumScene();
         const koch = new KochScene();
-        const circleTree = new CircleTreeScene();
         const dla = new DlaScene();
+        const bosWarp = new BosWarpScene();
+        const kalei = new KaleidoscopeScene();
+        const metaballs = new MetaballsScene();
         // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, circleTree, dla]) {
+        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
             if (typeof sc.setRenderer === "function") {
                 sc.setRenderer(this.renderer);
             }
@@ -239,7 +243,9 @@ export class VisualEngine {
             { def: { id: "rrt", name: "RRT" }, scene: rrt },
             { def: { id: "arboretum", name: "Arboretum" }, scene: arbor },
             { def: { id: "koch", name: "Koch" }, scene: koch },
-            { def: { id: "circleTree", name: "CircleTree" }, scene: circleTree },
+            { def: { id: "bosWarp", name: "BoS Warp" }, scene: bosWarp },
+            { def: { id: "kaleidoscope", name: "Kaleidoscope" }, scene: kalei },
+            { def: { id: "metaballs", name: "Metaballs" }, scene: metaballs },
             { def: { id: "ascii", name: "ASCII" }, scene: ascii }
         ];
         window.addEventListener("resize", () => this.onResize());

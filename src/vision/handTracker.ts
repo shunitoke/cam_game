@@ -37,16 +37,66 @@ export class HandTracker {
   private handLandmarker: HandLandmarker | null = null;
   private result: HandLandmarkerResult | null = null;
 
+  private vision: any | null = null;
+  private readonly wasmUrl = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
+  private readonly modelUrl =
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+  private restartInFlight: Promise<void> | null = null;
+
   private prevCenters = new Map<string, Vec2>();
+  private filtered = new Map<
+    string,
+    {
+      center: Vec2;
+      wrist: Vec2;
+      pinch: number;
+      open: boolean;
+      fist: boolean;
+      score: number;
+    }
+  >();
+
+  private targets = new Map<
+    string,
+    {
+      label: HandLabel;
+      score: number;
+      center: Vec2;
+      wrist: Vec2;
+      pinch: number;
+      open: boolean;
+      fist: boolean;
+      landmarks?: Vec2[];
+    }
+  >();
+
+  private landmarkBuf = new Map<string, Vec2[]>();
 
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
+  private videoTrack: MediaStreamTrack | null = null;
   private lastVideoTime = -1;
 
-  private targetFps = 15;
-  private minIntervalMs = 1000 / 15;
+  private targetFps = 12;
+  private minIntervalMs = 1000 / 12;
   private lastInferT = -Infinity;
   private safeMode = false;
+
+  private inferMsEma = 0;
+  private lastInferMs = 0;
+  private dynamicMinIntervalMs = 1000 / 15;
+
+  private smoothTauSec = 0.18;
+
+  private wantLandmarks = true;
+
+  private inferEnabled = true;
+
+  private inferPauseUntilMs = 0;
+
+  private currentNumHands = 0;
+  private overBudgetMs = 0;
+  private underBudgetMs = 0;
 
   constructor(
     private readonly cfg: {
@@ -55,18 +105,35 @@ export class HandTracker {
     }
   ) {}
 
+  setWantLandmarks(on: boolean) {
+    this.wantLandmarks = on;
+  }
+
+  setInferEnabled(on: boolean) {
+    this.inferEnabled = on;
+  }
+
+  getInferPauseMs(t: number) {
+    return Math.max(0, this.inferPauseUntilMs - t);
+  }
+
+  getLastInferMs() {
+    return this.lastInferMs;
+  }
+
   async start(video: HTMLVideoElement) {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
         width: { ideal: 640 },
         height: { ideal: 360 },
-        frameRate: { ideal: 30, max: 30 }
+        frameRate: { ideal: 24, max: 24 }
       },
       audio: false
     });
 
     this.stream = stream;
+    this.videoTrack = stream.getVideoTracks?.()?.[0] ?? null;
     this.video = video;
     video.srcObject = stream;
 
@@ -74,19 +141,16 @@ export class HandTracker {
       video.onloadedmetadata = () => resolve();
     });
 
-    const wasmUrl = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
-    const modelUrl =
-      "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-
-    const vision = await FilesetResolver.forVisionTasks(wasmUrl);
-
-    this.handLandmarker = await HandLandmarker.createFromOptions(vision, {
+    this.vision = await FilesetResolver.forVisionTasks(this.wasmUrl);
+    this.handLandmarker = await HandLandmarker.createFromOptions(this.vision, {
       baseOptions: {
-        modelAssetPath: modelUrl
+        modelAssetPath: this.modelUrl
       },
       runningMode: "VIDEO",
       numHands: this.cfg.maxHands
     });
+
+    this.currentNumHands = this.cfg.maxHands;
 
     this.setSafeMode(this.safeMode);
   }
@@ -94,20 +158,78 @@ export class HandTracker {
   stop() {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
+    this.videoTrack = null;
     this.video = null;
     this.handLandmarker?.close();
     this.handLandmarker = null;
+    this.vision = null;
+    this.restartInFlight = null;
+  }
+
+  async restartLandmarker() {
+    if (this.restartInFlight) return this.restartInFlight;
+    if (!this.video) return;
+
+    const run = async () => {
+      const nowMs = typeof performance !== "undefined" ? performance.now() : Date.now();
+      this.inferPauseUntilMs = Math.max(this.inferPauseUntilMs, nowMs + 4000);
+
+      try {
+        this.handLandmarker?.close();
+      } catch {
+      }
+      this.handLandmarker = null;
+      this.result = null;
+
+      try {
+        if (!this.vision) {
+          this.vision = await FilesetResolver.forVisionTasks(this.wasmUrl);
+        }
+        this.handLandmarker = await HandLandmarker.createFromOptions(this.vision, {
+          baseOptions: {
+            modelAssetPath: this.modelUrl
+          },
+          runningMode: "VIDEO",
+          numHands: this.cfg.maxHands
+        });
+        this.currentNumHands = this.cfg.maxHands;
+        this.setSafeMode(this.safeMode);
+      } catch {
+      }
+    };
+
+    this.restartInFlight = run().finally(() => {
+      this.restartInFlight = null;
+    });
+    return this.restartInFlight;
   }
 
   setSafeMode(on: boolean) {
     this.safeMode = on;
-    this.targetFps = on ? 12 : 15;
+    // In safe mode we need a much lower tracker budget; the HUD showed ~35ms for tracking.
+    this.targetFps = on ? 6 : 12;
     this.minIntervalMs = 1000 / this.targetFps;
+    this.dynamicMinIntervalMs = this.minIntervalMs;
+
+    // Reduce camera resolution in safe mode to reduce MediaPipe workload.
+    const track: any = this.videoTrack as any;
+    if (track && typeof track.applyConstraints === "function") {
+      const constraints: MediaTrackConstraints = on
+        ? { width: { ideal: 384 }, height: { ideal: 216 }, frameRate: { ideal: 15, max: 15 } }
+        : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } };
+      try {
+        void track.applyConstraints(constraints);
+      } catch {
+        // ignore
+      }
+    }
 
     const lm: any = this.handLandmarker as any;
     if (lm && typeof lm.setOptions === "function") {
       try {
-        void lm.setOptions({ numHands: on ? 1 : this.cfg.maxHands });
+        const desired = on ? 1 : Math.max(1, this.currentNumHands || this.cfg.maxHands);
+        void lm.setOptions({ numHands: desired });
+        this.currentNumHands = desired;
       } catch {
         // ignore
       }
@@ -118,96 +240,245 @@ export class HandTracker {
     const lm = this.handLandmarker;
     const videoEl = this.video;
 
+    const nowMs = typeof performance !== "undefined" ? performance.now() : t;
+
     if (!lm || !videoEl) {
       return { count: 0, hands: [] };
     }
 
-    if (t - this.lastInferT < this.minIntervalMs) {
-      return this.resultToFrame(this.result, dt);
+    if (!this.inferEnabled) {
+      return this.smoothToTargets(dt);
+    }
+
+    if (nowMs < this.inferPauseUntilMs) {
+      return this.smoothToTargets(dt);
+    }
+
+    let didInfer = false;
+
+    if (t - this.lastInferT < this.dynamicMinIntervalMs) {
+      return this.smoothToTargets(dt);
     }
 
     if (videoEl.currentTime === this.lastVideoTime) {
-      return this.resultToFrame(this.result, dt);
+      return this.smoothToTargets(dt);
     }
 
     this.lastVideoTime = videoEl.currentTime;
     this.lastInferT = t;
 
+    let detections: HandLandmarkerResult | null = null;
+    let inferMs = 0;
     try {
-      const detections = (lm as any).detectForVideo(videoEl, t) as HandLandmarkerResult;
+      const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+      detections = (lm as any).detectForVideo(videoEl, t) as HandLandmarkerResult;
+      const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+      inferMs = Math.max(0, t1 - t0);
+    } catch {
+      const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+      inferMs = Math.max(0, t1 - nowMs);
+      detections = null;
+    }
+
+    this.lastInferMs = inferMs;
+
+    try {
+      const spikeMs = this.safeMode ? 70 : 90;
+      if (inferMs > spikeMs) {
+        this.inferPauseUntilMs = nowMs + (this.safeMode ? 3000 : 1800);
+        const canSet = typeof (lm as any).setOptions === "function";
+        if (canSet && this.currentNumHands > 1) {
+          try {
+            void (lm as any).setOptions({ numHands: 1 });
+            this.currentNumHands = 1;
+          } catch {
+          }
+        }
+      }
+
+      this.inferMsEma = this.inferMsEma ? this.inferMsEma + (inferMs - this.inferMsEma) * 0.12 : inferMs;
+
+      // Adaptive throttling: if inference is expensive, reduce how often we run it.
+      // Keeps visuals responsive even if tracking gets heavy.
+      const budgetMs = this.safeMode ? 12 : 18;
+      const slow = this.inferMsEma > budgetMs;
+      const mul = slow ? 1.75 : 1.0;
+      this.dynamicMinIntervalMs = Math.max(this.minIntervalMs, this.inferMsEma * mul);
+
+      if (this.cfg.maxHands > 1) {
+        const dMs = Math.max(0, dt * 1000);
+        if (slow) {
+          this.overBudgetMs += dMs;
+          this.underBudgetMs = Math.max(0, this.underBudgetMs - dMs);
+        } else {
+          this.underBudgetMs += dMs;
+          this.overBudgetMs = Math.max(0, this.overBudgetMs - dMs);
+        }
+
+        const canSet = typeof (lm as any).setOptions === "function";
+        if (canSet && this.currentNumHands > 1 && this.overBudgetMs > 900) {
+          try {
+            void (lm as any).setOptions({ numHands: 1 });
+            this.currentNumHands = 1;
+            this.overBudgetMs = 0;
+            this.underBudgetMs = 0;
+          } catch {
+          }
+        }
+        if (canSet && this.currentNumHands === 1 && !this.safeMode && this.underBudgetMs > 3500) {
+          try {
+            void (lm as any).setOptions({ numHands: this.cfg.maxHands });
+            this.currentNumHands = this.cfg.maxHands;
+            this.overBudgetMs = 0;
+            this.underBudgetMs = 0;
+          } catch {
+          }
+        }
+      }
+
       this.result = detections;
+      didInfer = true;
     } catch {
       return { count: 0, hands: [] };
     }
 
-    return this.resultToFrame(this.result, dt);
+    if (didInfer) {
+      this.updateTargetsFromResult(this.result);
+    }
+    return this.smoothToTargets(dt);
   }
 
-  private resultToFrame(result: HandLandmarkerResult | null, dt: number): HandsFrame {
-    if (!result?.landmarks || result.landmarks.length === 0) return { count: 0, hands: [] };
-
-    const hands: HandPose[] = [];
+  private updateTargetsFromResult(result: HandLandmarkerResult | null) {
+    this.targets.clear();
+    if (!result?.landmarks || result.landmarks.length === 0) return;
 
     for (let i = 0; i < result.landmarks.length; i++) {
       const lm = result.landmarks[i];
       if (!lm || lm.length < 21) continue;
 
       const { label, score } = handedLabelOf(result as any, i);
+      const key = `${label}:${i}`;
 
-      const landmarks: Vec2[] = lm.map((p) => ({
-        x: this.cfg.mirrorX ? 1 - p.x : p.x,
-        y: p.y
-      }));
-
-      const wrist: Vec2 = {
-        x: this.cfg.mirrorX ? 1 - lm[0].x : lm[0].x,
-        y: lm[0].y
+      const mx = (idx: number) => (this.cfg.mirrorX ? 1 - lm[idx]!.x : lm[idx]!.x);
+      const my = (idx: number) => lm[idx]!.y;
+      const distXY = (ax: number, ay: number, bx: number, by: number) => {
+        const dx = ax - bx;
+        const dy = ay - by;
+        return Math.sqrt(dx * dx + dy * dy);
       };
 
-      const keyPoints = [0, 5, 9, 13, 17].map((idx) => ({
-        x: this.cfg.mirrorX ? 1 - lm[idx].x : lm[idx].x,
-        y: lm[idx].y
-      }));
+      const wx = mx(0);
+      const wy = my(0);
+      const wrist = { x: wx, y: wy };
 
-      const center = avg(keyPoints);
+      const x5 = mx(5);
+      const y5 = my(5);
+      const x9 = mx(9);
+      const y9 = my(9);
+      const x13 = mx(13);
+      const y13 = my(13);
+      const x17 = mx(17);
+      const y17 = my(17);
 
-      const palmSize = dist(wrist, {
-        x: this.cfg.mirrorX ? 1 - lm[9].x : lm[9].x,
-        y: lm[9].y
-      });
+      const center = { x: (wx + x5 + x9 + x13 + x17) / 5, y: (wy + y5 + y9 + y13 + y17) / 5 };
 
-      const thumbTip = { x: this.cfg.mirrorX ? 1 - lm[4].x : lm[4].x, y: lm[4].y };
-      const indexTip = { x: this.cfg.mirrorX ? 1 - lm[8].x : lm[8].x, y: lm[8].y };
-      const pinchDist = dist(thumbTip, indexTip);
+      const palmSize = distXY(wx, wy, x9, y9);
+
+      const thx = mx(4);
+      const thy = my(4);
+      const inx = mx(8);
+      const iny = my(8);
+      const pinchDist = distXY(thx, thy, inx, iny);
       const pinch = clamp01((0.20 - pinchDist) / 0.13);
 
-      const tips = [8, 12, 16, 20].map((idx) => ({
-        x: this.cfg.mirrorX ? 1 - lm[idx].x : lm[idx].x,
-        y: lm[idx].y
-      }));
+      const tipAvg =
+        (distXY(inx, iny, wx, wy) +
+          distXY(mx(12), my(12), wx, wy) +
+          distXY(mx(16), my(16), wx, wy) +
+          distXY(mx(20), my(20), wx, wy)) /
+        4;
+      const open = tipAvg > palmSize * 1.75 && pinch < 0.75;
+      const fist = tipAvg < palmSize * 1.18 && pinch < 0.45;
 
-      const avgTipDist = tips.reduce((acc, p) => acc + dist(p, wrist), 0) / tips.length;
-      const open = avgTipDist > palmSize * 1.75 && pinch < 0.75;
-      const fist = avgTipDist < palmSize * 1.18 && pinch < 0.45;
+      let landmarks: Vec2[] | undefined;
+      if (!this.safeMode && this.wantLandmarks) {
+        let buf = this.landmarkBuf.get(key);
+        if (!buf || buf.length !== 21) {
+          buf = new Array(21);
+          for (let j = 0; j < 21; j++) {
+            buf[j] = { x: 0, y: 0 };
+          }
+          this.landmarkBuf.set(key, buf);
+        }
+        for (let j = 0; j < 21; j++) {
+          const p = lm[j]!;
+          const x = this.cfg.mirrorX ? 1 - p.x : p.x;
+          const y = p.y;
+          const o = buf[j]!;
+          o.x = x;
+          o.y = y;
+        }
+        landmarks = buf;
+      } else {
+        landmarks = undefined;
+      }
 
-      const key = `${label}:${i}`;
+      this.targets.set(key, { label, score, center, wrist, pinch, open, fist, landmarks });
+    }
+  }
+
+  private smoothToTargets(dt: number): HandsFrame {
+    if (!this.targets.size) return { count: 0, hands: [] };
+
+    const out: HandPose[] = [];
+    const tau = Math.max(0.02, this.smoothTauSec);
+    const a = 1 - Math.exp(-Math.max(0, dt) / tau);
+
+    for (const [key, tgt] of this.targets) {
+      const prevF = this.filtered.get(key);
+
+      const nextCenter: Vec2 = prevF
+        ? {
+            x: prevF.center.x + (tgt.center.x - prevF.center.x) * a,
+            y: prevF.center.y + (tgt.center.y - prevF.center.y) * a
+          }
+        : tgt.center;
+
+      const nextWrist: Vec2 = prevF
+        ? {
+            x: prevF.wrist.x + (tgt.wrist.x - prevF.wrist.x) * a,
+            y: prevF.wrist.y + (tgt.wrist.y - prevF.wrist.y) * a
+          }
+        : tgt.wrist;
+
+      const nextPinch = prevF ? prevF.pinch + (tgt.pinch - prevF.pinch) * a : tgt.pinch;
+
+      this.filtered.set(key, {
+        center: nextCenter,
+        wrist: nextWrist,
+        pinch: nextPinch,
+        open: tgt.open,
+        fist: tgt.fist,
+        score: tgt.score
+      });
+
       const prev = this.prevCenters.get(key);
-      const speed = prev ? clamp01(dist(prev, center) / Math.max(1e-6, dt) / 1.3) : 0;
-      this.prevCenters.set(key, center);
+      const speed = prev ? clamp01(dist(prev, nextCenter) / Math.max(1e-6, dt) / 1.3) : 0;
+      this.prevCenters.set(key, nextCenter);
 
-      hands.push({
-        label,
-        score,
-        landmarks,
-        center,
-        wrist,
-        pinch,
-        open,
-        fist,
+      out.push({
+        label: tgt.label,
+        score: tgt.score,
+        landmarks: tgt.landmarks,
+        center: nextCenter,
+        wrist: nextWrist,
+        pinch: nextPinch,
+        open: tgt.open,
+        fist: tgt.fist,
         speed
       });
     }
 
-    return { count: hands.length, hands };
+    return { count: out.length, hands: out };
   }
 }

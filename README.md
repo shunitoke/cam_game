@@ -86,8 +86,10 @@ npm run dev
 - **Scene 14: RRT**
 - **Scene 15: Arboretum**
 - **Scene 16: Koch**
-- **Scene 17: CircleTree**
-- **Scene 18: ASCII**
+- **Scene 17: BoS Warp (fBm + domain warping)**
+- **Scene 18: Kaleidoscope**
+- **Scene 19: Metaballs**
+- **Scene 20: ASCII**
 
 ### ASCII scene (camera silhouette)
 
@@ -170,4 +172,44 @@ If you switch **MODE** to **DRONE**, the groove is stopped and sound is generate
 - Best results: good frontal light, hands in frame, avoid overexposed background.
 - If tracking drops: controls freeze and risky FX backs off.
 - Visual backdrops for plane-based scenes are scaled to be **fullscreen**.
+
+## Performance postmortem / note to next agent
+
+This project hit persistent UI stalls / Long Tasks during live use. We attempted incremental optimizations and added safety mechanisms, but the core freeze behavior was not fully eliminated.
+
+### What profiling showed
+
+- In Chrome Performance traces, the biggest Long Tasks were dominated by `@mediapipe/tasks-vision` (HandLandmarker) WASM work inside `HandTracker.update()` (synchronous `detectForVideo`).
+- MediaPipe HandLandmarker `detectForVideo()` is synchronous on web and blocks the UI thread. The official docs explicitly recommend using WebWorkers for real-time camera usage.
+- Secondary load contributors existed too (Tone.js Transport callbacks, analyzer reads, WebGL render), but the “hard” multi-hundred-ms stalls were mainly MediaPipe WASM.
+
+### What we tried (and why it still wasn’t enough)
+
+- Reduced camera resolution/FPS and inference frequency, adaptive throttling, dynamic hand count reduction.
+- Audio engine throttling (reduced scheduling density in LOW mode), throttled analyzer reads.
+- Added watchdogs:
+  - pause inference for a cooldown after an expensive `detectForVideo` call (`inf cool`)
+  - auto-recreate the `HandLandmarker` instance on repeated stalls
+  - manual + automatic full page reload (equivalent to closing/reopening tab), because that was the most reliable “reset” for the user
+
+These mitigations improved stability but could not guarantee stall-free operation because the underlying inference call is still synchronous and can spike unpredictably.
+
+### Recommended rewrite direction
+
+- Move MediaPipe inference off the main thread:
+  - run `detectForVideo` inside a WebWorker (per MediaPipe docs)
+  - pass frames via `ImageBitmap`/`OffscreenCanvas` patterns (or a worker-friendly pipeline)
+  - main thread should only render + apply the latest stable hand state
+- Keep strict subsystem boundaries:
+  - main loop orchestrator (time budget + backpressure)
+  - camera capture module
+  - inference worker module
+  - audio engine module
+  - visuals module
+- Treat “quality” settings as dynamic, not a global toggle:
+  - adaptively degrade when over budget
+  - recover slowly when under budget
+- Keep tooling:
+  - in-app HUD (FPS, dt/raw dt, LT/GC counters, per-subsystem timings)
+  - one-click safe reset/reload for live performance
 

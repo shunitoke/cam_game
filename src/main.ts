@@ -82,8 +82,8 @@ async function main() {
   nextBtn.disabled = true;
 
   const safeBtn = el("button");
-  safeBtn.textContent = "SAFE: OFF";
-  safeBtn.title = "Safe Mode";
+  safeBtn.textContent = "LOW: OFF";
+  safeBtn.title = "Low render mode";
   safeBtn.disabled = true;
   let safeMode = false;
 
@@ -98,6 +98,20 @@ async function main() {
 
   const status = el("div");
   status.innerHTML = `<small>Camera: <span id="cam">idle</span> · Audio: <span id="aud">idle</span> · MIDI: <span id="midi">idle</span> · Hands: <span id="hands">0</span></small>`;
+
+  const hud = el("div");
+  hud.style.position = "fixed";
+  hud.style.left = "10px";
+  hud.style.bottom = "10px";
+  hud.style.zIndex = "9999";
+  hud.style.padding = "8px 10px";
+  hud.style.borderRadius = "10px";
+  hud.style.background = "rgba(0,0,0,0.55)";
+  hud.style.color = "rgba(255,255,255,0.92)";
+  hud.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  hud.style.pointerEvents = "none";
+  hud.style.whiteSpace = "pre";
+  hud.textContent = "HUD";
 
   const hints = el("details", "hints");
   const hintsSummary = el("summary");
@@ -125,6 +139,7 @@ async function main() {
   panel.appendChild(hints);
   ui.appendChild(panel);
   document.body.appendChild(ui);
+  document.body.appendChild(hud);
 
   const videoWrap = el("div", "videoPreview");
   const video = el("video");
@@ -206,7 +221,7 @@ async function main() {
         ["Right Y", "speed"],
         ["Build", "detail + intensity"],
         ["MIDI note", "shock / motion"],
-        ["SAFE mode", "lower octaves"],
+        ["LOW mode", "lower octaves"],
         ["R", "reset"]
       ]
     },
@@ -231,7 +246,7 @@ async function main() {
         ["Right speed", "quality (steps)"],
         ["Build", "aggression"],
         ["MIDI note", "flash"],
-        ["SAFE mode", "lower steps"],
+        ["LOW mode", "lower steps"],
         ["R", "reset"]
       ]
     },
@@ -243,7 +258,7 @@ async function main() {
         ["Right pinch", "brush (paint B)"],
         ["Build", "sim speed"],
         ["MIDI note", "kick agitation"],
-        ["SAFE mode", "lower sim res"],
+        ["LOW mode", "lower sim res"],
         ["R", "reseed"]
       ]
     },
@@ -263,7 +278,7 @@ async function main() {
         ["Build", "growth speed"],
         ["Left hand", "energy bias"],
         ["MIDI note", "faster climbing"],
-        ["SAFE mode", "lower-res but stable"],
+        ["LOW mode", "lower-res but stable"],
         ["R", "reset growth"]
       ]
     },
@@ -331,6 +346,39 @@ async function main() {
         ["R", "reset"]
       ]
     },
+    bosWarp: {
+      title: "BoS Warp",
+      items: [
+        ["Right hand", "scale / speed"],
+        ["Right pinch", "warp amount"],
+        ["Build", "detail + intensity"],
+        ["MIDI note", "burst"],
+        ["LOW mode", "fewer octaves"],
+        ["R", "reset"]
+      ]
+    },
+    kaleidoscope: {
+      title: "Kaleidoscope",
+      items: [
+        ["Right hand", "zoom / speed"],
+        ["Right pinch", "twist"],
+        ["Build", "segments + motion"],
+        ["MIDI note", "burst"],
+        ["LOW mode", "lower detail"],
+        ["R", "reset"]
+      ]
+    },
+    metaballs: {
+      title: "Metaballs",
+      items: [
+        ["Right hand", "zoom / speed"],
+        ["Right pinch", "threshold / glow"],
+        ["Build", "more blobs"],
+        ["MIDI note", "burst"],
+        ["LOW mode", "fewer blobs"],
+        ["R", "reset"]
+      ]
+    },
     ascii: {
       title: "ASCII",
       items: [
@@ -369,7 +417,40 @@ async function main() {
   let audio: AudioEngine | null = null;
   let audioMode: "performance" | "drone" = "performance";
   const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
+  tracker.setWantLandmarks(overlayOn);
   const midi = new MidiInput();
+
+  let hudOn = true;
+  let camTrackOn = true;
+  let camInferOn = true;
+  let audioVizOn = true;
+  let gpuRenderOn = true;
+  let audioOn = true;
+
+  let fpsEma = 0;
+  let longFrames = 0;
+  let lastHudAt = 0;
+  let lastDtMs = 16.7;
+  let lastRawDtMs = 16.7;
+
+  let tTrackerMs = 0;
+  let tMidiMs = 0;
+  let tVizMs = 0;
+  let tAudioMs = 0;
+  let tVisualsMs = 0;
+  let tTickMs = 0;
+
+  const ema = (prev: number, next: number, a: number) => (prev ? prev + (next - prev) * a : next);
+
+  let lastTickAt = performance.now();
+  let tickCount = 0;
+  let lastErr: string | null = null;
+  let lastRej: string | null = null;
+  let lastWebglLostAt = 0;
+  let longTaskCount = 0;
+  let longTaskMs = 0;
+  let gcCount = 0;
+  let gcMs = 0;
 
   const midiHeld = new Set<number>();
   const midiVel = new Map<number, number>();
@@ -444,14 +525,65 @@ async function main() {
 
   let running = false;
   let lastT = performance.now();
+  let wasHidden = document.visibilityState !== "visible";
 
   let beatViz = 0;
+
+  let lastAudioVizAt = 0;
+  let lastAudioViz: any = null;
+
+  let stallScore = 0;
+  let lastAutoTrackerRestartAt = 0;
+  let severeStallScore = 0;
+  let lastAutoReloadAt = 0;
+  let reloadRequested = false;
+
+  const requestReload = (reason: string) => {
+    if (reloadRequested) return;
+    reloadRequested = true;
+
+    try {
+      lastErr = `reload:${reason}`;
+    } catch {
+    }
+
+    try {
+      running = false;
+    } catch {
+    }
+
+    try {
+      void audio?.stop();
+    } catch {
+    }
+    try {
+      tracker.stop();
+    } catch {
+    }
+    try {
+      midi.stop();
+    } catch {
+    }
+    try {
+      video.srcObject = null;
+    } catch {
+    }
+    try {
+      void video.pause();
+    } catch {
+    }
+
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 60);
+  };
 
   canvas.addEventListener(
     "webglcontextlost",
     (e) => {
       e.preventDefault();
       running = false;
+      lastWebglLostAt = performance.now();
       camSpan.textContent = "on";
       audSpan.textContent = "off";
       stopBtn.disabled = true;
@@ -468,19 +600,135 @@ async function main() {
     sceneBadge.textContent = `Scene: ${visuals.current.name}`;
   });
 
+  window.addEventListener("error", (ev) => {
+    try {
+      lastErr = ev.error instanceof Error ? ev.error.message : String((ev as any).message ?? ev);
+    } catch {
+      lastErr = "unknown error";
+    }
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    try {
+      const r: any = (ev as any).reason;
+      lastRej = r instanceof Error ? r.message : String(r);
+    } catch {
+      lastRej = "unhandled rejection";
+    }
+  });
+
+  try {
+    const anyWin: any = window as any;
+    if (typeof anyWin.PerformanceObserver === "function") {
+      const po = new anyWin.PerformanceObserver((list: any) => {
+        try {
+          const entries = list.getEntries?.() ?? [];
+          for (const e of entries) {
+            longTaskCount++;
+            const d = typeof e?.duration === "number" ? e.duration : 0;
+            longTaskMs += d;
+          }
+        } catch {
+          // ignore
+        }
+      });
+      po.observe({ entryTypes: ["longtask"] });
+
+      try {
+        const poGc = new anyWin.PerformanceObserver((list: any) => {
+          try {
+            const entries = list.getEntries?.() ?? [];
+            for (const e of entries) {
+              gcCount++;
+              const d = typeof e?.duration === "number" ? e.duration : 0;
+              gcMs += d;
+            }
+          } catch {
+            // ignore
+          }
+        });
+        poGc.observe({ entryTypes: ["gc"] });
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   const tick = (t: number) => {
     if (!running) return;
 
-    const dt = Math.max(0.001, (t - lastT) / 1000);
-    lastT = t;
+    try {
+      tickCount++;
+      lastTickAt = performance.now();
 
-    const hands = tracker.update(t, dt);
-    handsSpan.textContent = String(hands.count);
+      // If the page is hidden/occluded, browsers can throttle rAF to a few FPS or even
+      // seconds per frame. Reset timing and skip heavy work to avoid massive dt spikes.
+      const vis = document.visibilityState;
+      if (vis !== "visible") {
+        lastT = t;
+        lastDtMs = 0;
+        return;
+      }
 
-    overlay.draw(hands.hands);
+      // Clamp dt so a long pause (tab switch, breakpoint, throttling) doesn't explode sim.
+      const rawDt = Math.max(0.001, (t - lastT) / 1000);
+      const dt = Math.min(0.05, rawDt);
+      lastT = t;
 
-    const control = controlBus.update({ t, dt, hands });
+      lastDtMs = dt * 1000;
+      lastRawDtMs = rawDt * 1000;
 
+      const nowMs = performance.now();
+      if (camTrackOn && camInferOn && rawDt > 0.22) {
+        stallScore += 1;
+      } else {
+        stallScore = Math.max(0, stallScore - 0.25);
+      }
+      if (stallScore >= 3 && nowMs - lastAutoTrackerRestartAt > 15000) {
+        lastAutoTrackerRestartAt = nowMs;
+        stallScore = 0;
+        const trAny: any = tracker as any;
+        void trAny.restartLandmarker?.();
+      }
+
+      if (camTrackOn && camInferOn && rawDt > 0.45) {
+        severeStallScore += 1;
+      } else {
+        severeStallScore = Math.max(0, severeStallScore - 0.2);
+      }
+      if (
+        severeStallScore >= 4 &&
+        nowMs - lastAutoReloadAt > 45000 &&
+        nowMs - lastAutoTrackerRestartAt < 20000
+      ) {
+        lastAutoReloadAt = nowMs;
+        severeStallScore = 0;
+        requestReload("auto");
+        return;
+      }
+
+      const fpsNow = 1 / Math.max(1e-6, rawDt);
+      fpsEma = fpsEma ? fpsEma + (fpsNow - fpsEma) * 0.06 : fpsNow;
+      if (rawDt > 0.033) longFrames++;
+
+      const tickStart = performance.now();
+
+      const t0 = performance.now();
+      const hands = camTrackOn ? tracker.update(t, dt) : { count: 0, hands: [] };
+      const t1 = performance.now();
+      tTrackerMs = ema(tTrackerMs, t1 - t0, 0.12);
+      handsSpan.textContent = String(hands.count);
+
+      if (camTrackOn) {
+        overlay.draw(hands.hands);
+      } else {
+        overlay.draw([]);
+      }
+
+      const control = controlBus.update({ t, dt, hands });
+
+    const midiT0 = performance.now();
     const midiStatus = midi.getStatus();
     if (!midiStatus.supported) {
       midiSpan.textContent = "off";
@@ -557,6 +805,8 @@ async function main() {
         audio?.handleMidi(midiEvents);
       }
     }
+    const midiT1 = performance.now();
+    tMidiMs = ema(tMidiMs, midiT1 - midiT0, 0.12);
 
     if (midiOverlayWasOn) {
       for (let n = midiMin; n <= midiMax; n++) {
@@ -587,10 +837,24 @@ async function main() {
       visuals.triggerBurst(Math.min(1.5, burst));
     }
 
-    const audioViz = audio?.getWaveforms();
-    const beatPulse = audio?.getPulse?.() ?? 0;
-    if (audioViz) {
-      (control as any).audioViz = audioViz;
+      const vizT0 = performance.now();
+      let audioViz: any = null;
+      if (audioVizOn) {
+        const now = performance.now();
+        // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
+        // cause GC/LongTasks if called every frame.
+        const minIntervalMs = 66; // ~15 Hz
+        if (!lastAudioVizAt || now - lastAudioVizAt >= minIntervalMs) {
+          lastAudioVizAt = now;
+          lastAudioViz = audio?.getWaveforms() ?? null;
+        }
+        audioViz = lastAudioViz;
+      }
+      const vizT1 = performance.now();
+      tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
+      const beatPulse = audio?.getPulse?.() ?? 0;
+      if (audioViz) {
+        (control as any).audioViz = audioViz;
 
       const kick = (audioViz as any).kick as Float32Array | undefined;
       let peak = 0;
@@ -624,7 +888,10 @@ async function main() {
       beatViz = Math.max(0, beatViz - (control as any).dt * 1.75);
     }
 
-    const bpOut = Math.max(beatPulse, beatViz);
+    const bpOut =
+      audioMode === "performance"
+        ? beatPulse
+        : Math.max(beatPulse, beatViz);
     (control as any).beatPulse = bpOut;
     if (running) audSpan.title = `beat: ${bpOut.toFixed(3)}`;
     const controlWithViz = control as any;
@@ -642,11 +909,84 @@ async function main() {
       visuals.reset();
     }
 
-    audio?.update(controlWithViz);
-    visuals.update(controlWithViz);
+      const aT0 = performance.now();
+      if (audioOn) {
+        audio?.update(controlWithViz);
+      }
+      const aT1 = performance.now();
+      tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
 
-    requestAnimationFrame(tick);
+      const vT0 = performance.now();
+      visuals.update(controlWithViz);
+      const vT1 = performance.now();
+      tVisualsMs = ema(tVisualsMs, vT1 - vT0, 0.12);
+
+      const tickEnd = performance.now();
+      tTickMs = ema(tTickMs, tickEnd - tickStart, 0.12);
+
+    } catch (e) {
+      lastErr = errMsg(e);
+      console.error(e);
+    } finally {
+      if (running) requestAnimationFrame(tick);
+    }
   };
+
+  document.addEventListener("visibilitychange", () => {
+    const hidden = document.visibilityState !== "visible";
+    if (hidden !== wasHidden) {
+      wasHidden = hidden;
+      // Reset timers so returning to the tab doesn't produce a huge dt.
+      lastT = performance.now();
+      lastTickAt = performance.now();
+    }
+  });
+
+  const renderHud = () => {
+    if (!hudOn) {
+      hud.style.display = "none";
+      return;
+    }
+    hud.style.display = "block";
+
+    const now = performance.now();
+    const age = Math.max(0, now - lastTickAt);
+    const vis = document.visibilityState;
+
+    const mem: any = (performance as any).memory;
+    const heapMb = mem?.usedJSHeapSize ? mem.usedJSHeapSize / (1024 * 1024) : null;
+    const heapLimitMb = mem?.jsHeapSizeLimit ? mem.jsHeapSizeLimit / (1024 * 1024) : null;
+    const heapStr = heapMb != null ? `${heapMb.toFixed(1)}${heapLimitMb ? "/" + heapLimitMb.toFixed(0) : ""} MB` : "n/a";
+
+    const lostStr = lastWebglLostAt ? `webglLost ${Math.round((now - lastWebglLostAt) / 1000)}s ago` : "webgl ok";
+    const lt = longTaskCount ? `${longTaskCount} / ${Math.round(longTaskMs)}ms` : "0";
+    const gc = gcCount ? `${gcCount} / ${Math.round(gcMs)}ms` : "0";
+
+    const trAny: any = tracker as any;
+    const infPauseMs = camTrackOn && camInferOn ? (trAny.getInferPauseMs?.(now) ?? 0) : 0;
+    const infLastMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
+    const infStr = !camInferOn ? "off" : infPauseMs > 0 ? `cool ${Math.round(infPauseMs)}ms` : `on ${Math.round(infLastMs)}ms`;
+
+    hud.textContent =
+      `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
+      `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}` +
+      `\nheap ${heapStr}` +
+      `\nLT ${lt}  GC ${gc}  ${lostStr}` +
+      `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
+      `\nlow ${safeMode ? "on" : "off"}  cam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
+      `\nerr ${lastErr ?? "-"}` +
+      `\nrej ${lastRej ?? "-"}` +
+      `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;
+  };
+
+  // Update HUD even if requestAnimationFrame gets throttled or stops.
+  window.setInterval(() => {
+    try {
+      renderHud();
+    } catch {
+      // ignore
+    }
+  }, 250);
 
   const errMsg = (e: unknown) => {
     if (e instanceof Error) return e.message;
@@ -791,21 +1131,94 @@ async function main() {
 
   safeBtn.addEventListener("click", () => {
     safeMode = !safeMode;
-    safeBtn.textContent = safeMode ? "SAFE: ON" : "SAFE: OFF";
+    safeBtn.textContent = safeMode ? "LOW: ON" : "LOW: OFF";
     visuals.setSafeMode(safeMode);
     tracker.setSafeMode(safeMode);
     overlay.setLowPower(safeMode);
     overlay.setMaxDpr(safeMode ? 1.0 : 1.25);
+    audio?.setSafeMode(safeMode);
   });
 
   overlayBtn.addEventListener("click", () => {
     overlayOn = !overlayOn;
     overlayBtn.textContent = overlayOn ? "OVR: ON" : "OVR: OFF";
     overlay.setEnabled(overlayOn);
+    tracker.setWantLandmarks(overlayOn);
   });
 
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
+
+    if (e.key.toLowerCase() === "h") {
+      hudOn = !hudOn;
+    }
+    if (e.key.toLowerCase() === "c") {
+      camTrackOn = !camTrackOn;
+      if (!camTrackOn) {
+        try {
+          tracker.stop();
+        } catch {
+        }
+        try {
+          video.srcObject = null;
+        } catch {
+        }
+        try {
+          video.pause();
+        } catch {
+        }
+        try {
+          videoWrap.style.display = "none";
+        } catch {
+        }
+        camSpan.textContent = "off";
+        handsSpan.textContent = "0";
+      } else {
+        try {
+          videoWrap.style.display = "block";
+        } catch {
+        }
+        camSpan.textContent = "starting";
+        void tracker
+          .start(video)
+          .then(() => {
+            camSpan.textContent = "on";
+          })
+          .catch((err) => {
+            camTrackOn = false;
+            camSpan.textContent = "error";
+            camSpan.title = `Camera error: ${errMsg(err)}`;
+          });
+      }
+    }
+    if (e.key.toLowerCase() === "i") {
+      camInferOn = !camInferOn;
+      tracker.setInferEnabled(camInferOn);
+    }
+    if (e.key.toLowerCase() === "v") {
+      audioVizOn = !audioVizOn;
+    }
+    if (e.key.toLowerCase() === "g") {
+      gpuRenderOn = !gpuRenderOn;
+      visuals.setRenderEnabled(gpuRenderOn);
+    }
+    if (e.key.toLowerCase() === "a") {
+      if (!audio) return;
+      audioOn = !audioOn;
+      if (!audioOn) {
+        void audio.stop();
+        audSpan.textContent = "off";
+      } else {
+        audio.setMode(audioMode);
+        audio.setSafeMode(safeMode);
+        void audio.start();
+        audSpan.textContent = "on";
+      }
+    }
+
+    if (e.key.toLowerCase() === "p") {
+      requestReload("manual");
+    }
 
     if (e.key === "ArrowLeft") {
       const s = visuals.nextScene(-1);
