@@ -118,6 +118,25 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
   private overBudgetMs = 0;
   private underBudgetMs = 0;
 
+  private updateInferBudget(inferMs: number) {
+    const a = 0.12;
+    this.inferMsEma = this.inferMsEma ? this.inferMsEma + (inferMs - this.inferMsEma) * a : inferMs;
+
+    const budgetMs = this.safeMode ? 14 : 11;
+    const over = Math.max(0, inferMs - budgetMs);
+    const under = Math.max(0, budgetMs - inferMs);
+    this.overBudgetMs = Math.min(3000, this.overBudgetMs + over);
+    this.underBudgetMs = Math.min(3000, this.underBudgetMs + under);
+
+    const target = Math.max(0, this.inferMsEma);
+    const mul = this.safeMode ? 3.2 : 2.8;
+    const desired = Math.max(this.minIntervalMs, target * mul);
+    const maxInterval = this.safeMode ? 140 : 120;
+    const clamped = Math.max(this.minIntervalMs, Math.min(maxInterval, desired));
+    const k = this.overBudgetMs > 60 ? 0.22 : this.underBudgetMs > 160 ? 0.12 : 0.16;
+    this.dynamicMinIntervalMs = this.dynamicMinIntervalMs + (clamped - this.dynamicMinIntervalMs) * k;
+  }
+
   constructor(
     private readonly cfg: {
       maxHands: number;
@@ -249,6 +268,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
           this.workerResult = msg.result ?? null;
           if (typeof msg.inferMs === "number") {
             this.lastInferMs = msg.inferMs;
+            this.updateInferBudget(this.lastInferMs);
           }
           return;
         }
@@ -332,7 +352,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
         const mediaTime = typeof meta?.mediaTime === "number" ? meta.mediaTime : v.currentTime;
 
         // Fixed FPS gate.
-        if (nowMs - this.lastInferT < this.minIntervalMs) return;
+        if (nowMs - this.lastInferT < this.dynamicMinIntervalMs) return;
 
         // Only infer when the video frame advanced.
         if (mediaTime === this.lastVideoTime) return;
@@ -372,6 +392,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
         this.result = (lm as any).detectForVideo(v, nowMs) as HandLandmarkerResult;
         const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
         this.lastInferMs = Math.max(0, t1 - t0);
+        this.updateInferBudget(this.lastInferMs);
       } catch {
         this.result = null;
         this.workerResult = null;
@@ -431,6 +452,9 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     this.targetFps = on ? 12 : 15;
     this.minIntervalMs = 1000 / this.targetFps;
     this.dynamicMinIntervalMs = this.minIntervalMs;
+    this.inferMsEma = 0;
+    this.overBudgetMs = 0;
+    this.underBudgetMs = 0;
 
     // Reduce camera resolution in safe mode to reduce MediaPipe workload.
     const track: any = this.videoTrack as any;

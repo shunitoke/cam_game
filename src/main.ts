@@ -495,6 +495,8 @@ async function main() {
   let audioUpdateTimer: number | null = null;
   let lastControlForAudio: any = null;
 
+  let lastOverlayDrawAt = 0;
+
   const ema = (prev: number, next: number, a: number) => (prev ? prev + (next - prev) * a : next);
 
   let lastTickAt = performance.now();
@@ -776,7 +778,12 @@ async function main() {
       handsSpan.textContent = String(hands.count);
 
       if (camTrackOn) {
-        overlay.draw(hands.hands);
+        const nowOv = performance.now();
+        const minOverlayIntervalMs = 50;
+        if (!lastOverlayDrawAt || nowOv - lastOverlayDrawAt >= minOverlayIntervalMs) {
+          lastOverlayDrawAt = nowOv;
+          overlay.draw(hands.hands);
+        }
       } else {
         overlay.draw([]);
       }
