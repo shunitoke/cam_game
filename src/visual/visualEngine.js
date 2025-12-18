@@ -38,6 +38,8 @@ export class VisualEngine {
     lastInternalH = 1;
     scenes;
     sceneIndex = 0;
+    renderFrameCount = 0;
+    lastRenderAt = 0;
     constructor(canvas, opts) {
         this.canvas = canvas;
         this.renderer = new THREE.WebGLRenderer({
@@ -298,6 +300,20 @@ export class VisualEngine {
         this.postMat.uniforms.uIters.value = Math.floor(lerp(0, this.safeMode ? 2 : 3, a));
         this.postMat.uniforms.uTime.value = this.postTime;
         this.renderer.render(this.postScene, this.postCamera);
+        this.renderFrameCount++;
+        this.lastRenderAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    }
+    getRenderStats() {
+        return {
+            renderEnabled: this.renderEnabled,
+            safeMode: this.safeMode,
+            renderScale: this.renderScale,
+            dpr: this.dpr,
+            internalW: this.lastInternalW,
+            internalH: this.lastInternalH,
+            renderFrameCount: this.renderFrameCount,
+            lastRenderAt: this.lastRenderAt
+        };
     }
     setRenderEnabled(on) {
         this.renderEnabled = on;

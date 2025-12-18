@@ -82,8 +82,8 @@ async function main() {
     nextBtn.title = "Next Scene";
     nextBtn.disabled = true;
     const overlayBtn = el("button");
-    overlayBtn.textContent = "OVR: ON";
-    overlayBtn.title = "Hand Overlay";
+    overlayBtn.textContent = "HANDS: ON";
+    overlayBtn.title = "Hand overlay";
     overlayBtn.disabled = true;
     let overlayOn = true;
     const sceneBadge = el("span", "badge");
@@ -154,7 +154,7 @@ async function main() {
     controlsRow.appendChild(startBtn);
     controlsRow.appendChild(stopBtn);
     const modeBtn = el("button");
-    modeBtn.textContent = "MODE: RAVE";
+    modeBtn.textContent = "MODE: DRONE";
     controlsRow.appendChild(modeBtn);
     controlsRow.appendChild(prevBtn);
     controlsRow.appendChild(nextBtn);
@@ -432,8 +432,7 @@ async function main() {
     const overlay = new HandOverlay2D(overlayCanvas);
     overlay.setMaxDpr(1.25);
     let audio = null;
-    let audioMode = "performance";
-    let audioTrack = "rave";
+    const audioMode = "drone";
     updateGestureHint(audioMode);
     const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
     tracker.setWantLandmarks(overlayOn);
@@ -928,9 +927,7 @@ async function main() {
             else {
                 beatViz = Math.max(0, beatViz - control.dt * 1.75);
             }
-            const bpOut = audioMode === "performance"
-                ? beatPulse
-                : Math.max(beatPulse, beatViz);
+            const bpOut = Math.max(beatPulse, beatViz);
             control.beatPulse = bpOut;
             if (running)
                 audSpan.title = `beat: ${bpOut.toFixed(3)}`;
@@ -990,6 +987,10 @@ async function main() {
         const now = performance.now();
         const age = Math.max(0, now - lastTickAt);
         const vis = document.visibilityState;
+        const vAny = visuals;
+        const rs = typeof vAny.getRenderStats === "function" ? vAny.getRenderStats() : null;
+        const renderAgeMs = rs?.lastRenderAt ? Math.max(0, now - rs.lastRenderAt) : 0;
+        const renderFrames = typeof rs?.renderFrameCount === "number" ? rs.renderFrameCount : 0;
         const mem = performance.memory;
         const heapMb = mem?.usedJSHeapSize ? mem.usedJSHeapSize / (1024 * 1024) : null;
         const heapLimitMb = mem?.jsHeapSizeLimit ? mem.jsHeapSizeLimit / (1024 * 1024) : null;
@@ -1011,7 +1012,7 @@ async function main() {
                 : `on ${infBackend} ${Math.round(infLastMs)}ms`;
         hudText.textContent =
             `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
-                `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}` +
+                `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}  rAge ${renderAgeMs.toFixed(0)}ms  rFrames ${renderFrames}` +
                 `\nheap ${heapStr}` +
                 `\nLT ${lt}  GC ${gc}  ${lostStr}` +
                 `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
@@ -1020,7 +1021,7 @@ async function main() {
                 `${audErr ? `\naudioErr ${audErr}` : ""}` +
                 `\nerr ${lastErr ?? "-"}` +
                 `\nrej ${lastRej ?? "-"}` +
-                `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;
+                `\nkeys: Ctrl/Alt + H HUD  C cam  I inf  V viz  G gpu  A aud  P reload  R reset`;
     };
     const renderHudMeter = () => {
         if (!hudOn)
@@ -1189,8 +1190,8 @@ async function main() {
         audSpan.textContent = "starting";
         try {
             if (!audio) {
-                const mod = await import("./music/audioEngine");
-                audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+                const mod = await import("./music/droneWorkletEngine");
+                audio = new mod.DroneWorkletEngine();
                 if (typeof mod?.AUDIO_ENGINE_VERSION === "string") {
                     audSpan.title = `AudioEngine: ${mod.AUDIO_ENGINE_VERSION}`;
                 }
@@ -1198,11 +1199,6 @@ async function main() {
             const a = audio;
             if (!a)
                 throw new Error("AudioEngine not initialized");
-            {
-                const picks = ["rave", "modern", "melodic"];
-                audioTrack = picks[Math.floor(Math.random() * picks.length)] ?? "rave";
-            }
-            a.setTrack(audioTrack);
             a.setMode(audioMode);
             try {
                 await a.start();
@@ -1295,12 +1291,7 @@ async function main() {
     stopBtn.addEventListener("click", () => {
         void stop().catch((e) => console.error(e));
     });
-    modeBtn.addEventListener("click", () => {
-        audioMode = audioMode === "drone" ? "performance" : "drone";
-        modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
-        updateGestureHint(audioMode);
-        audio?.setMode(audioMode);
-    });
+    modeBtn.disabled = true;
     prevBtn.addEventListener("click", () => {
         const s = visuals.nextScene(-1);
         sceneBadge.textContent = `Scene: ${s.name}`;
@@ -1315,133 +1306,136 @@ async function main() {
     });
     overlayBtn.addEventListener("click", () => {
         overlayOn = !overlayOn;
-        overlayBtn.textContent = overlayOn ? "OVR: ON" : "OVR: OFF";
+        overlayBtn.textContent = overlayOn ? "HANDS: ON" : "HANDS: OFF";
         overlay.setEnabled(overlayOn);
         tracker.setWantLandmarks(overlayOn);
     });
     window.addEventListener("keydown", (e) => {
         if (e.repeat)
             return;
-        if (e.key.toLowerCase() === "h") {
-            hudOn = !hudOn;
-        }
-        if (e.key.toLowerCase() === "c") {
-            camTrackOn = !camTrackOn;
-            if (!camTrackOn) {
-                try {
-                    tracker.stop();
-                }
-                catch {
-                }
-                try {
-                    video.srcObject = null;
-                }
-                catch {
-                }
-                try {
-                    video.pause();
-                }
-                catch {
-                }
-                try {
-                    videoWrap.style.display = "none";
-                }
-                catch {
-                }
-                camSpan.textContent = "off";
-                handsSpan.textContent = "0";
+        const service = e.ctrlKey || e.altKey || e.metaKey;
+        if (service) {
+            if (e.key.toLowerCase() === "h") {
+                hudOn = !hudOn;
             }
-            else {
-                try {
-                    videoWrap.style.display = "block";
-                }
-                catch {
-                }
-                camSpan.textContent = "starting";
-                void tracker
-                    .start(video)
-                    .then(() => {
-                    camSpan.textContent = "on";
-                })
-                    .catch((err) => {
-                    camTrackOn = false;
-                    camSpan.textContent = "error";
-                    camSpan.title = `Camera error: ${errMsg(err)}`;
-                });
-            }
-        }
-        if (e.key.toLowerCase() === "i") {
-            camInferOn = !camInferOn;
-            tracker.setInferEnabled(camInferOn);
-        }
-        if (e.key.toLowerCase() === "v") {
-            audioVizOn = !audioVizOn;
-        }
-        if (e.key.toLowerCase() === "g") {
-            gpuRenderOn = !gpuRenderOn;
-            visuals.setRenderEnabled(gpuRenderOn);
-        }
-        if (e.key.toLowerCase() === "a") {
-            if (!audio)
-                return;
-            audioOn = !audioOn;
-            if (!audioOn) {
-                if (audioUpdateTimer !== null) {
+            if (e.key.toLowerCase() === "c") {
+                camTrackOn = !camTrackOn;
+                if (!camTrackOn) {
                     try {
-                        window.clearInterval(audioUpdateTimer);
+                        tracker.stop();
                     }
                     catch {
                     }
-                    audioUpdateTimer = null;
+                    try {
+                        video.srcObject = null;
+                    }
+                    catch {
+                    }
+                    try {
+                        video.pause();
+                    }
+                    catch {
+                    }
+                    try {
+                        videoWrap.style.display = "none";
+                    }
+                    catch {
+                    }
+                    camSpan.textContent = "off";
+                    handsSpan.textContent = "0";
                 }
-                void audio.stop();
-                audSpan.textContent = "off";
+                else {
+                    try {
+                        videoWrap.style.display = "block";
+                    }
+                    catch {
+                    }
+                    camSpan.textContent = "starting";
+                    void tracker
+                        .start(video)
+                        .then(() => {
+                        camSpan.textContent = "on";
+                    })
+                        .catch((err) => {
+                        camTrackOn = false;
+                        camSpan.textContent = "error";
+                        camSpan.title = `Camera error: ${errMsg(err)}`;
+                    });
+                }
             }
-            else {
-                audSpan.textContent = "starting";
-                audio.setTrack(audioTrack);
-                audio.setMode(audioMode);
-                audio.setSafeMode(false);
-                void audio.start();
-                audSpan.textContent = "on";
-                if (audioUpdateTimer === null && running) {
-                    audioUpdateTimer = window.setInterval(() => {
+            if (e.key.toLowerCase() === "i") {
+                camInferOn = !camInferOn;
+                tracker.setInferEnabled(camInferOn);
+            }
+            if (e.key.toLowerCase() === "v") {
+                audioVizOn = !audioVizOn;
+            }
+            if (e.key.toLowerCase() === "g") {
+                gpuRenderOn = !gpuRenderOn;
+                visuals.setRenderEnabled(gpuRenderOn);
+            }
+            if (e.key.toLowerCase() === "a") {
+                if (!audio)
+                    return;
+                audioOn = !audioOn;
+                if (!audioOn) {
+                    if (audioUpdateTimer !== null) {
                         try {
-                            if (!running || !audioOn)
-                                return;
-                            const c = lastControlForAudio;
-                            if (!c)
-                                return;
-                            const aT0 = performance.now();
-                            audio?.update(c);
-                            const aT1 = performance.now();
-                            tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                            window.clearInterval(audioUpdateTimer);
                         }
                         catch {
-                            // ignore
                         }
-                    }, 33);
+                        audioUpdateTimer = null;
+                    }
+                    void audio.stop();
+                    audSpan.textContent = "off";
+                }
+                else {
+                    audSpan.textContent = "starting";
+                    audio.setMode(audioMode);
+                    audio.setSafeMode(false);
+                    void audio.start();
+                    audSpan.textContent = "on";
+                    if (audioUpdateTimer === null && running) {
+                        audioUpdateTimer = window.setInterval(() => {
+                            try {
+                                if (!running || !audioOn)
+                                    return;
+                                const c = lastControlForAudio;
+                                if (!c)
+                                    return;
+                                const aT0 = performance.now();
+                                audio?.update(c);
+                                const aT1 = performance.now();
+                                tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                            }
+                            catch {
+                                // ignore
+                            }
+                        }, 33);
+                    }
                 }
             }
-        }
-        if (e.key.toLowerCase() === "p") {
-            requestReload("manual");
-        }
-        if (e.key === "ArrowLeft") {
-            const s = visuals.nextScene(-1);
-            sceneBadge.textContent = `Scene: ${s.name}`;
-            renderHints(s.id, s.name);
-            audio?.setScene(s.id);
-        }
-        if (e.key === "ArrowRight") {
-            const s = visuals.nextScene(1);
-            sceneBadge.textContent = `Scene: ${s.name}`;
-            renderHints(s.id, s.name);
-            audio?.setScene(s.id);
-        }
-        if (e.key.toLowerCase() === "r") {
-            audio?.reset();
-            visuals.reset();
+            if (e.key.toLowerCase() === "p") {
+                requestReload("manual");
+            }
+            if (e.key === "ArrowLeft") {
+                const s = visuals.nextScene(-1);
+                sceneBadge.textContent = `Scene: ${s.name}`;
+                renderHints(s.id, s.name);
+                audio?.setScene(s.id);
+            }
+            if (e.key === "ArrowRight") {
+                const s = visuals.nextScene(1);
+                sceneBadge.textContent = `Scene: ${s.name}`;
+                renderHints(s.id, s.name);
+                audio?.setScene(s.id);
+            }
+            if (e.key.toLowerCase() === "r") {
+                audio?.reset();
+                visuals.reset();
+            }
+            return;
         }
         const note = keyboardCodeToNote.get(e.code);
         if (note == null)
@@ -1455,6 +1449,8 @@ async function main() {
         if (keyboardHeldCodes.has(e.code))
             return;
         keyboardHeldCodes.add(e.code);
+        // Musical keys should not trigger browser/UI shortcuts.
+        e.preventDefault();
         const vel = 0.9;
         midiLastEventAt = performance.now();
         midiEventsSince += 1;

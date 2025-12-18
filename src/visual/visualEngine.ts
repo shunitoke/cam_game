@@ -57,6 +57,9 @@ export class VisualEngine {
 
   private sceneIndex = 0;
 
+  private renderFrameCount = 0;
+  private lastRenderAt = 0;
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     opts?: {
@@ -339,6 +342,22 @@ export class VisualEngine {
     (this.postMat.uniforms.uIters.value as number) = Math.floor(lerp(0, this.safeMode ? 2 : 3, a));
     (this.postMat.uniforms.uTime.value as number) = this.postTime;
     this.renderer.render(this.postScene, this.postCamera);
+
+    this.renderFrameCount++;
+    this.lastRenderAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  }
+
+  getRenderStats() {
+    return {
+      renderEnabled: this.renderEnabled,
+      safeMode: this.safeMode,
+      renderScale: this.renderScale,
+      dpr: this.dpr,
+      internalW: this.lastInternalW,
+      internalH: this.lastInternalH,
+      renderFrameCount: this.renderFrameCount,
+      lastRenderAt: this.lastRenderAt
+    };
   }
 
   setRenderEnabled(on: boolean) {

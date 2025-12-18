@@ -95,7 +95,7 @@ export class HandOverlay2D {
                 continue;
             }
             const lineWidth = 2 + hand.pinch * 2.2;
-            const glow = 0;
+            const glow = this.lowPower ? 3 + hand.pinch * 3 : 10 + hand.pinch * 14;
             this.ctx.save();
             this.ctx.globalCompositeOperation = this.lowPower ? "source-over" : "lighter";
             this.ctx.lineCap = "round";
@@ -145,7 +145,7 @@ export class HandOverlay2D {
         const c = this.toPx(hand.center);
         const w = this.toPx(hand.wrist);
         const r = 10 + hand.pinch * 18;
-        const glow = 0;
+        const glow = this.lowPower ? 3 + hand.pinch * 3 : 10 + hand.pinch * 14;
         this.ctx.save();
         this.ctx.globalCompositeOperation = this.lowPower ? "source-over" : "lighter";
         this.ctx.lineCap = "round";

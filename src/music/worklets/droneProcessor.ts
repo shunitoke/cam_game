@@ -1,0 +1,424 @@
+type DroneParamsMsg = {
+  type: "params";
+  mode: "performance" | "drone";
+  freq: number;
+  gain: number;
+  cutoff: number;
+  drive: number;
+  lfoHz: number;
+  lfoAmt: number;
+  attack: number;
+  release: number;
+  detune: number;
+  sub: number;
+  noise: number;
+  delayTime: number;
+  delayFb: number;
+  delayMix: number;
+  bpm: number;
+  pulseAmt: number;
+  pulseDecay: number;
+  tickAmt: number;
+  tickDecay: number;
+  tickTone: number;
+
+  guitarFreq: number;
+  guitarPluck: number;
+  guitarBright: number;
+};
+
+type DroneGateMsg = { type: "gate"; gate: number };
+
+type DroneMsg = DroneParamsMsg | DroneGateMsg;
+
+function clamp(v: number, a: number, b: number) {
+  return Math.min(b, Math.max(a, v));
+}
+
+function midiToHz(n: number) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+class DroneProcessor extends AudioWorkletProcessor {
+  private phase = 0;
+  private lfoPhase = 0;
+  private detunePhase = 0;
+  private subPhase = 0;
+
+  private seed = 22222;
+
+  private freq = 110;
+  private gain = 0.0;
+  private targetGain = 0.0;
+  private gate = 0.0;
+
+  private mode: "performance" | "drone" = "drone";
+
+  private cutoff = 900;
+  private drive = 0.2;
+
+  private attackSec = 0.02;
+  private releaseSec = 0.15;
+  private detune = 0.003;
+  private sub = 0.25;
+  private noise = 0.02;
+
+  private env = 0;
+
+  private lfoHz = 0.18;
+  private lfoAmt = 0.12;
+
+  // simple one-pole LP state
+  private lp = 0;
+
+  // simple delay
+  private delayL: Float32Array | null = null;
+  private delayR: Float32Array | null = null;
+  private delayIdx = 0;
+  private delayTimeSec = 0.18;
+  private delayFb = 0.25;
+  private delayMix = 0.08;
+
+  // rhythm
+  private bpm = 72;
+  private pulseAmt = 0.15;
+  private pulseDecaySec = 0.12;
+  private tickAmt = 0.10;
+  private tickDecaySec = 0.04;
+  private tickTone = 2400;
+
+  private step = 0;
+  private stepPhase = 0;
+  private pulseEnv = 0;
+  private tickEnv = 0;
+
+  // rave voices
+  private kickPhase = 0;
+  private kickEnv = 0;
+  private kickPitchEnv = 0;
+  private bassPhase = 0;
+  private bassEnv = 0;
+  private bassHz = 55;
+  private hatHp = 0;
+
+  // Sunn O))) underlay (drone mode)
+  private doomPhase = 0;
+  private doomLfoPhase = 0;
+
+  // Karplus-Strong guitar (drone mode)
+  private guitarBuf: Float32Array | null = null;
+  private guitarIdx = 0;
+  private guitarLen = 0;
+  private guitarLp = 0;
+  private guitarHp = 0;
+  private guitarFreq = 196;
+  private guitarBright = 0.6;
+
+  constructor() {
+    super();
+
+    this.port.onmessage = (ev: MessageEvent<DroneMsg>) => {
+      const m = ev.data;
+      if (!m) return;
+
+      if (m.type === "params") {
+        this.mode = m.mode === "performance" ? "performance" : "drone";
+        this.freq = clamp(m.freq, 20, 2000);
+        this.targetGain = clamp(m.gain, 0, 1.5);
+        this.cutoff = clamp(m.cutoff, 40, 18000);
+        this.drive = clamp(m.drive, 0, 2.5);
+        this.lfoHz = clamp(m.lfoHz, 0, 12);
+        this.lfoAmt = clamp(m.lfoAmt, 0, 1);
+        this.attackSec = clamp(m.attack, 0.001, 2.0);
+        this.releaseSec = clamp(m.release, 0.001, 4.0);
+        this.detune = clamp(m.detune, 0, 0.02);
+        this.sub = clamp(m.sub, 0, 1);
+        this.noise = clamp(m.noise, 0, 0.5);
+        this.delayTimeSec = clamp(m.delayTime, 0, 1.5);
+        this.delayFb = clamp(m.delayFb, 0, 0.95);
+        this.delayMix = clamp(m.delayMix, 0, 1);
+
+        this.bpm = clamp(m.bpm, 20, 220);
+        this.pulseAmt = clamp(m.pulseAmt, 0, 1);
+        this.pulseDecaySec = clamp(m.pulseDecay, 0.005, 2.0);
+        this.tickAmt = clamp(m.tickAmt, 0, 1);
+        this.tickDecaySec = clamp(m.tickDecay, 0.002, 1.0);
+        this.tickTone = clamp(m.tickTone, 120, 12000);
+
+        this.guitarFreq = clamp(m.guitarFreq, 40, 900);
+        this.guitarBright = clamp(m.guitarBright, 0, 1);
+
+        if (m.guitarPluck > 0.5) {
+          // will be handled in process loop (ensures buffer exists with correct sr)
+          this.guitarIdx = -1;
+        }
+      }
+
+      if (m.type === "gate") {
+        this.gate = clamp(m.gate, 0, 1);
+      }
+    };
+  }
+
+  process(_inputs: Float32Array[][], outputs: Float32Array[][]) {
+    const out = outputs[0];
+    if (!out || out.length < 1) return true;
+
+    const ch0 = out[0];
+    const ch1 = out[1] ?? out[0];
+
+    const sr = sampleRate;
+    const invSr = 1 / sr;
+
+    // Karplus-Strong buffer: up to ~1.2s (low notes)
+    if (!this.guitarBuf || this.guitarBuf.length !== Math.floor(sr * 1.2)) {
+      this.guitarBuf = new Float32Array(Math.max(1, Math.floor(sr * 1.2)));
+      this.guitarIdx = 0;
+      this.guitarLp = 0;
+      this.guitarHp = 0;
+    }
+    const gBuf = this.guitarBuf;
+    const gN = gBuf.length;
+
+    if (!this.delayL || !this.delayR || this.delayL.length !== Math.floor(sr * 2.0)) {
+      const n = Math.max(1, Math.floor(sr * 2.0));
+      this.delayL = new Float32Array(n);
+      this.delayR = new Float32Array(n);
+      this.delayIdx = 0;
+    }
+    const dL = this.delayL;
+    const dR = this.delayR;
+    const dN = dL.length;
+
+    // smooth gain (avoid zipper noise)
+    const atk = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.attackSec)));
+    const rel = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.releaseSec)));
+
+    const pulseRel = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.pulseDecaySec)));
+    const tickRel = 1 - Math.exp(-1 / (sr * Math.max(0.001, this.tickDecaySec)));
+
+    // 16th note stepper (4 steps per beat)
+    const secPerBeat = 60 / Math.max(1e-6, this.bpm);
+    const secPerStep = secPerBeat / 4;
+    const stepInc = invSr / Math.max(1e-6, secPerStep);
+
+    for (let i = 0; i < ch0.length; i++) {
+      const gateTarget = this.mode === "performance" ? 1 : (this.gate > 0.5 ? this.targetGain : 0);
+      const a = gateTarget > this.gain ? atk : rel;
+      this.gain = this.gain + (gateTarget - this.gain) * a;
+
+      // additional envelope for smoother perception
+      const ea = gateTarget > this.env ? atk : rel;
+      this.env = this.env + (gateTarget - this.env) * ea;
+
+      // step clock
+      this.stepPhase += stepInc;
+      if (this.stepPhase >= 1) {
+        this.stepPhase -= 1;
+        this.step = (this.step + 1) & 15;
+
+        if (this.mode === "performance") {
+          // RAVE: kick on 1+3, hats on offbeats, bass on a simple 16-step lane.
+          const kickOn = this.step === 0 || this.step === 8;
+          if (kickOn) {
+            this.kickEnv = 1;
+            this.kickPitchEnv = 1;
+            this.pulseEnv = 1;
+          }
+
+          const hatOn = (this.step & 1) === 1;
+          if (hatOn) {
+            this.tickEnv = 1;
+          }
+
+          const bassOn = this.step === 2 || this.step === 6 || this.step === 10 || this.step === 14;
+          if (bassOn) {
+            this.bassEnv = 1;
+            // two-note-ish feel
+            this.bassHz = (this.step === 6 || this.step === 14) ? 73.42 : 65.41; // D2 / C2
+          }
+        } else {
+          // DRONE: slow, drone-centric (anchors on 1 + occasional offbeats)
+          const on = this.step === 0 || this.step === 8 || this.step === 12;
+          if (on) {
+            this.pulseEnv = 1;
+            if (this.tickAmt > 0.001) this.tickEnv = 1;
+          }
+        }
+      }
+
+      // decay envelopes
+      this.pulseEnv = this.pulseEnv + (0 - this.pulseEnv) * pulseRel;
+      this.tickEnv = this.tickEnv + (0 - this.tickEnv) * tickRel;
+
+      // rave envelopes
+      const kickRel = 1 - Math.exp(-1 / (sr * 0.18));
+      const kickPitchRel = 1 - Math.exp(-1 / (sr * 0.05));
+      const bassRel = 1 - Math.exp(-1 / (sr * 0.12));
+      this.kickEnv = this.kickEnv + (0 - this.kickEnv) * kickRel;
+      this.kickPitchEnv = this.kickPitchEnv + (0 - this.kickPitchEnv) * kickPitchRel;
+      this.bassEnv = this.bassEnv + (0 - this.bassEnv) * bassRel;
+
+      // LFO
+      const lfo = Math.sin(this.lfoPhase * 2 * Math.PI);
+      this.lfoPhase += this.lfoHz * invSr;
+      if (this.lfoPhase >= 1) this.lfoPhase -= 1;
+
+      const f = this.freq * (1 + lfo * this.lfoAmt);
+      this.phase += f * invSr;
+      if (this.phase >= 1) this.phase -= 1;
+
+      const det = this.detune;
+      this.detunePhase += f * (1 + det) * invSr;
+      if (this.detunePhase >= 1) this.detunePhase -= 1;
+
+      this.subPhase += (f * 0.5) * invSr;
+      if (this.subPhase >= 1) this.subPhase -= 1;
+
+      // waveform: tri + detuned tri + sub sine + tiny noise
+      const tri = 1 - 4 * Math.abs(this.phase - 0.5);
+      const tri2 = 1 - 4 * Math.abs(this.detunePhase - 0.5);
+      const sub = Math.sin(this.subPhase * 2 * Math.PI);
+
+      // xorshift-ish noise
+      this.seed ^= this.seed << 13;
+      this.seed ^= this.seed >> 17;
+      this.seed ^= this.seed << 5;
+      const n01 = (this.seed >>> 0) / 4294967295;
+      const nz = (n01 * 2 - 1) * this.noise;
+
+      let x = 0.62 * tri + 0.20 * tri2 + this.sub * 0.30 * sub + nz;
+
+      // In RAVE (performance) mode, the worklet should not output a continuous drone bed.
+      // RAVE sound comes from the sample-based drum scheduler on the main thread.
+      if (this.mode === "performance") {
+        x = 0;
+      }
+
+      // tick (short noise burst) - simple 1-pole BP-ish tone emphasis
+      let tick = 0;
+      if (this.tickEnv > 1e-5) {
+        const tn = (n01 * 2 - 1);
+        const tf = this.tickTone;
+        // crude resonant feel: multiply by a fast sine at tf
+        tick = tn * Math.sin((this.phase + this.detunePhase) * Math.PI * 2 * (tf / Math.max(1e-6, f)));
+        tick *= this.tickEnv * this.tickAmt;
+      }
+
+      // 1-pole LP
+      const c = clamp(this.cutoff, 40, 18000);
+      const alpha = clamp((2 * Math.PI * c) / sr, 0.0005, 0.95);
+      this.lp = this.lp + (x - this.lp) * alpha;
+      x = this.lp;
+
+      // drive
+      const d = this.drive;
+      x = Math.tanh(x * (1 + d * 3.2));
+
+      // pulse/tremolo: make the drone breathe rhythmically
+      const pulse = 1 + this.pulseAmt * this.pulseEnv;
+      x *= pulse;
+
+      // add tick after saturation to cut through
+      x += tick;
+
+      // Note: RAVE drums are sample-based (scheduled on main thread).
+      // Keep this worklet focused on DRONE textures + guitar.
+
+      // DRONE underlay: heavy sub + slow movement (Sunn O))) vibe)
+      if (this.mode === "drone") {
+        const doomHz = Math.max(22, Math.min(68, this.freq * 0.25));
+        this.doomPhase += doomHz * invSr;
+        if (this.doomPhase >= 1) this.doomPhase -= 1;
+
+        this.doomLfoPhase += 0.035 * invSr;
+        if (this.doomLfoPhase >= 1) this.doomLfoPhase -= 1;
+
+        const doomLfo = 0.65 + 0.35 * Math.sin(this.doomLfoPhase * 2 * Math.PI);
+        const doom = Math.sin(this.doomPhase * 2 * Math.PI);
+        const doomDrive = 1.0 + this.drive * 1.25 + this.sub * 1.35;
+        const doomSat = Math.tanh(doom * doomDrive);
+        x += doomSat * doomLfo * this.env * (0.28 + 0.22 * this.sub);
+      }
+
+      // DRONE guitar: Karplus-Strong pluck, triggered by right pinch edge
+      if (this.mode === "drone") {
+        const freq = this.guitarFreq;
+        const desiredLen = Math.max(16, Math.min(gN - 1, Math.floor(sr / Math.max(1e-6, freq))));
+        this.guitarLen = desiredLen;
+
+        // pluck requested via special idx=-1
+        if (this.guitarIdx < 0) {
+          this.guitarIdx = 0;
+          // fill delay line with noise burst
+          for (let k = 0; k < this.guitarLen; k++) {
+            // reuse RNG state; cheap noise
+            this.seed ^= this.seed << 13;
+            this.seed ^= this.seed >> 17;
+            this.seed ^= this.seed << 5;
+            const r01 = (this.seed >>> 0) / 4294967295;
+            gBuf[k] = (r01 * 2 - 1) * (0.85 + 0.15 * this.guitarBright);
+          }
+          for (let k = this.guitarLen; k < gN; k++) {
+            gBuf[k] = 0;
+          }
+        }
+
+        // process one sample of the string
+        const idx = this.guitarIdx;
+        const next = idx + 1;
+        const a0 = gBuf[idx] ?? 0;
+        const a1 = gBuf[next >= this.guitarLen ? 0 : next] ?? 0;
+        let y = 0.5 * (a0 + a1);
+
+        // lowpass in the loop, brightness controls damping
+        const damp = 0.18 + (1 - this.guitarBright) * 0.68;
+        this.guitarLp = this.guitarLp + (y - this.guitarLp) * damp;
+        y = this.guitarLp;
+
+        // write back (feedback slightly < 1)
+        const fb = 0.992 - (1 - this.guitarBright) * 0.018;
+        gBuf[idx] = y * fb;
+        this.guitarIdx = next >= this.guitarLen ? 0 : next;
+
+        // highpass-ish output to avoid too much sub rumble
+        const hpA = 0.995;
+        this.guitarHp = hpA * (this.guitarHp + y - this.guitarHp);
+
+        const gOut = (y - this.guitarHp) * (0.55 + 0.25 * this.guitarBright);
+        x += gOut * (0.55 + 0.35 * this.env);
+      }
+
+      // output gain
+      const g = this.gain;
+      const dry = x * g * (0.30 + 0.08 * this.env);
+
+      const delayTime = this.delayTimeSec;
+      const delaySamp = Math.min(dN - 1, Math.max(0, Math.floor(delayTime * sr)));
+      const readIdx = (this.delayIdx - delaySamp + dN) % dN;
+
+      const dl = dL[readIdx] ?? 0;
+      const dr = dR[readIdx] ?? 0;
+
+      // small stereo spread in the feedback
+      const fb = this.delayFb;
+      dL[this.delayIdx] = dry + dl * fb;
+      dR[this.delayIdx] = dry + dr * fb;
+      this.delayIdx = (this.delayIdx + 1) % dN;
+
+      const mix = this.delayMix;
+      const outL = dry * (1 - mix) + dl * mix;
+      const outR = dry * (1 - mix) + dr * mix;
+
+      ch0[i] = outL;
+      ch1[i] = outR;
+    }
+
+    return true;
+  }
+}
+
+registerProcessor("drone-processor", DroneProcessor);
+
+// Silence TS/ESLint about unused helpers in worklet scope
+void midiToHz;

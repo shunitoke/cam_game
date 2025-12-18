@@ -1,6 +1,6 @@
 import "./style.css";
 
-import type { AudioEngine } from "./music/audioEngine";
+import type { DroneWorkletEngine } from "./music/droneWorkletEngine";
 import { ControlBus } from "./control/controlBus";
 import { HandTracker } from "./vision/handTracker";
 import { VisualEngine } from "./visual/visualEngine";
@@ -140,17 +140,21 @@ async function main() {
     if (mode === "drone") {
       gestureHint.textContent =
         "Gestures (DRONE)\n" +
-        "- 🤏🫲 Left pinch: BASS\n" +
-        "- ↔️ Move L/R: pitch\n" +
-        "- 🤏🫱 Add right hand + pinch: GUITAR\n" +
-        "- 🫱⬆️⬇️ Right hand up/down: brightness\n";
+        "- A/W/S/E... keys: pitch\n" +
+        "- 🤏🫲 Left pinch: gate / level\n" +
+        "- 🫲 X: BPM (slow pulse)\n" +
+        "- 🫲 Y: envelope (atk/rel)\n" +
+        "- 🫲🫱 Both hands: build = more pulse\n" +
+        "- 🫱 X: guitar pitch\n" +
+        "- 🤏🫱 Right pinch: pluck (guitar) + ticks\n" +
+        "- 🫱 Y: brightness\n";
     } else {
       gestureHint.textContent =
         "Gestures (RAVE)\n" +
-        "- 🫲 Left hand: mix / flow\n" +
-        "- 🫱 Right hand: space / FX\n" +
-        "- 🫲🫱 Both hands: build / intensity\n" +
-        "- 🤏 Pinch: intensity\n";
+        "- 🫲 X: tempo (BPM)\n" +
+        "- 🫱 Y: drum filter (LPF)\n" +
+        "- 🤏🫱 Right pinch: hat density / open hat\n" +
+        "- 🫲🫱 Both hands: build = more rumble\n";
     }
   };
 
@@ -455,9 +459,8 @@ async function main() {
 
   const overlay = new HandOverlay2D(overlayCanvas);
   overlay.setMaxDpr(1.25);
-  let audio: AudioEngine | null = null;
+  let audio: DroneWorkletEngine | null = null;
   let audioMode: "performance" | "drone" = "performance";
-  let audioTrack: "rave" | "modern" | "melodic" = "rave";
   updateGestureHint(audioMode);
   const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
   tracker.setWantLandmarks(overlayOn);
@@ -972,9 +975,7 @@ async function main() {
     }
 
     const bpOut =
-      audioMode === "performance"
-        ? beatPulse
-        : Math.max(beatPulse, beatViz);
+      Math.max(beatPulse, beatViz);
     (control as any).beatPulse = bpOut;
     if (running) audSpan.title = `beat: ${bpOut.toFixed(3)}`;
     const controlWithViz = control as any;
@@ -1040,6 +1041,11 @@ async function main() {
     const age = Math.max(0, now - lastTickAt);
     const vis = document.visibilityState;
 
+    const vAny: any = visuals as any;
+    const rs = typeof vAny.getRenderStats === "function" ? vAny.getRenderStats() : null;
+    const renderAgeMs = rs?.lastRenderAt ? Math.max(0, now - rs.lastRenderAt) : 0;
+    const renderFrames = typeof rs?.renderFrameCount === "number" ? rs.renderFrameCount : 0;
+
     const mem: any = (performance as any).memory;
     const heapMb = mem?.usedJSHeapSize ? mem.usedJSHeapSize / (1024 * 1024) : null;
     const heapLimitMb = mem?.jsHeapSizeLimit ? mem.jsHeapSizeLimit / (1024 * 1024) : null;
@@ -1066,7 +1072,7 @@ async function main() {
 
     hudText.textContent =
       `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
-      `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}` +
+      `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}  rAge ${renderAgeMs.toFixed(0)}ms  rFrames ${renderFrames}` +
       `\nheap ${heapStr}` +
       `\nLT ${lt}  GC ${gc}  ${lostStr}` +
       `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
@@ -1075,7 +1081,7 @@ async function main() {
       `${audErr ? `\naudioErr ${audErr}` : ""}` +
       `\nerr ${lastErr ?? "-"}` +
       `\nrej ${lastRej ?? "-"}` +
-      `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;
+      `\nkeys: Ctrl/Alt + H HUD  C cam  I inf  V viz  G gpu  A aud  P reload  R reset`;
   };
 
   const renderHudMeter = () => {
@@ -1253,8 +1259,8 @@ async function main() {
     audSpan.textContent = "starting";
     try {
       if (!audio) {
-        const mod: any = await import("./music/audioEngine");
-        audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+        const mod: any = await import("./music/droneWorkletEngine");
+        audio = new mod.DroneWorkletEngine();
         if (typeof mod?.AUDIO_ENGINE_VERSION === "string") {
           audSpan.title = `AudioEngine: ${mod.AUDIO_ENGINE_VERSION}`;
         }
@@ -1263,11 +1269,6 @@ async function main() {
       const a = audio;
       if (!a) throw new Error("AudioEngine not initialized");
 
-      {
-        const picks: Array<"rave" | "modern" | "melodic"> = ["rave", "modern", "melodic"];
-        audioTrack = picks[Math.floor(Math.random() * picks.length)] ?? "rave";
-      }
-      a.setTrack(audioTrack);
       a.setMode(audioMode);
 
       try {
@@ -1393,115 +1394,120 @@ async function main() {
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
 
-    if (e.key.toLowerCase() === "h") {
-      hudOn = !hudOn;
-    }
-    if (e.key.toLowerCase() === "c") {
-      camTrackOn = !camTrackOn;
-      if (!camTrackOn) {
-        try {
-          tracker.stop();
-        } catch {
-        }
-        try {
-          video.srcObject = null;
-        } catch {
-        }
-        try {
-          video.pause();
-        } catch {
-        }
-        try {
-          videoWrap.style.display = "none";
-        } catch {
-        }
-        camSpan.textContent = "off";
-        handsSpan.textContent = "0";
-      } else {
-        try {
-          videoWrap.style.display = "block";
-        } catch {
-        }
-        camSpan.textContent = "starting";
-        void tracker
-          .start(video)
-          .then(() => {
-            camSpan.textContent = "on";
-          })
-          .catch((err) => {
-            camTrackOn = false;
-            camSpan.textContent = "error";
-            camSpan.title = `Camera error: ${errMsg(err)}`;
-          });
+    const service = e.ctrlKey || e.altKey || e.metaKey;
+
+    if (service) {
+      if (e.key.toLowerCase() === "h") {
+        hudOn = !hudOn;
       }
-    }
-    if (e.key.toLowerCase() === "i") {
-      camInferOn = !camInferOn;
-      tracker.setInferEnabled(camInferOn);
-    }
-    if (e.key.toLowerCase() === "v") {
-      audioVizOn = !audioVizOn;
-    }
-    if (e.key.toLowerCase() === "g") {
-      gpuRenderOn = !gpuRenderOn;
-      visuals.setRenderEnabled(gpuRenderOn);
-    }
-    if (e.key.toLowerCase() === "a") {
-      if (!audio) return;
-      audioOn = !audioOn;
-      if (!audioOn) {
-        if (audioUpdateTimer !== null) {
+      if (e.key.toLowerCase() === "c") {
+        camTrackOn = !camTrackOn;
+        if (!camTrackOn) {
           try {
-            window.clearInterval(audioUpdateTimer);
+            tracker.stop();
           } catch {
           }
-          audioUpdateTimer = null;
-        }
-        void audio.stop();
-        audSpan.textContent = "off";
-      } else {
-        audSpan.textContent = "starting";
-        audio.setTrack(audioTrack);
-        audio.setMode(audioMode);
-        audio.setSafeMode(false);
-        void audio.start();
-        audSpan.textContent = "on";
-        if (audioUpdateTimer === null && running) {
-          audioUpdateTimer = window.setInterval(() => {
-            try {
-              if (!running || !audioOn) return;
-              const c = lastControlForAudio;
-              if (!c) return;
-              const aT0 = performance.now();
-              audio?.update(c);
-              const aT1 = performance.now();
-              tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
-            } catch {
-              // ignore
-            }
-          }, 33);
+          try {
+            video.srcObject = null;
+          } catch {
+          }
+          try {
+            video.pause();
+          } catch {
+          }
+          try {
+            videoWrap.style.display = "none";
+          } catch {
+          }
+          camSpan.textContent = "off";
+          handsSpan.textContent = "0";
+        } else {
+          try {
+            videoWrap.style.display = "block";
+          } catch {
+          }
+          camSpan.textContent = "starting";
+          void tracker
+            .start(video)
+            .then(() => {
+              camSpan.textContent = "on";
+            })
+            .catch((err) => {
+              camTrackOn = false;
+              camSpan.textContent = "error";
+              camSpan.title = `Camera error: ${errMsg(err)}`;
+            });
         }
       }
-    }
-    if (e.key.toLowerCase() === "p") {
-      requestReload("manual");
-    }
+      if (e.key.toLowerCase() === "i") {
+        camInferOn = !camInferOn;
+        tracker.setInferEnabled(camInferOn);
+      }
+      if (e.key.toLowerCase() === "v") {
+        audioVizOn = !audioVizOn;
+      }
+      if (e.key.toLowerCase() === "g") {
+        gpuRenderOn = !gpuRenderOn;
+        visuals.setRenderEnabled(gpuRenderOn);
+      }
+      if (e.key.toLowerCase() === "a") {
+        if (!audio) return;
+        audioOn = !audioOn;
+        if (!audioOn) {
+          if (audioUpdateTimer !== null) {
+            try {
+              window.clearInterval(audioUpdateTimer);
+            } catch {
+            }
+            audioUpdateTimer = null;
+          }
+          void audio.stop();
+          audSpan.textContent = "off";
+        } else {
+          audSpan.textContent = "starting";
+          audio.setMode(audioMode);
+          audio.setSafeMode(false);
+          void audio.start();
+          audSpan.textContent = "on";
+          if (audioUpdateTimer === null && running) {
+            audioUpdateTimer = window.setInterval(() => {
+              try {
+                if (!running || !audioOn) return;
+                const c = lastControlForAudio;
+                if (!c) return;
+                const aT0 = performance.now();
+                audio?.update(c);
+                const aT1 = performance.now();
+                tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+              } catch {
+                // ignore
+              }
+            }, 33);
+          }
+        }
+      }
+      if (e.key.toLowerCase() === "p") {
+        requestReload("manual");
+      }
 
-    if (e.key === "ArrowLeft") {
-      const s = visuals.nextScene(-1);
-      sceneBadge.textContent = `Scene: ${s.name}`;
-      renderHints(s.id, s.name);
-      audio?.setScene(s.id);
-    }
-    if (e.key === "ArrowRight") {
-      const s = visuals.nextScene(1);
-      sceneBadge.textContent = `Scene: ${s.name}`;
-      renderHints(s.id, s.name);
-      audio?.setScene(s.id);
-    }
-    if (e.key.toLowerCase() === "r") {
-      audio?.reset();
-      visuals.reset();
+      if (e.key === "ArrowLeft") {
+        const s = visuals.nextScene(-1);
+        sceneBadge.textContent = `Scene: ${s.name}`;
+        renderHints(s.id, s.name);
+        audio?.setScene(s.id);
+      }
+      if (e.key === "ArrowRight") {
+        const s = visuals.nextScene(1);
+        sceneBadge.textContent = `Scene: ${s.name}`;
+        renderHints(s.id, s.name);
+        audio?.setScene(s.id);
+      }
+      if (e.key.toLowerCase() === "r") {
+        audio?.reset();
+        visuals.reset();
+      }
+
+      return;
     }
 
     const note = keyboardCodeToNote.get(e.code);
@@ -1511,6 +1517,9 @@ async function main() {
     if (overlayMode !== "keyboard") return;
     if (keyboardHeldCodes.has(e.code)) return;
     keyboardHeldCodes.add(e.code);
+
+    // Musical keys should not trigger browser/UI shortcuts.
+    e.preventDefault();
 
     const vel = 0.9;
     midiLastEventAt = performance.now();

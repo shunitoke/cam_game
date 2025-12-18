@@ -65,8 +65,11 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
       open: boolean;
       fist: boolean;
       score: number;
+      landmarks?: Vec2[];
     }
   >();
+
+  private filteredLandmarkBuf = new Map<string, Vec2[]>();
 
   private targets = new Map<
     string,
@@ -104,7 +107,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
   private lastInferMs = 0;
   private dynamicMinIntervalMs = this.minIntervalMs;
 
-  private smoothTauSec = 0.18;
+  private smoothTauSec = 0.10;
 
   private wantLandmarks = true;
 
@@ -616,7 +619,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
       });
     }
 
-    return { count: hands.length, hands };
+    return this.smoothFrame({ count: hands.length, hands }, dt);
   }
 
   private workerResultToFrame(result: any | null, dt: number): HandsFrame {
@@ -703,7 +706,122 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
       });
     }
 
-    return { count: hands.length, hands };
+    return this.smoothFrame({ count: hands.length, hands }, dt);
+  }
+
+  private smoothFrame(frame: HandsFrame, dt: number): HandsFrame {
+    if (!frame.count) {
+      this.filtered.clear();
+      this.filteredLandmarkBuf.clear();
+      this.prevCenters.clear();
+      return frame;
+    }
+
+    const seen = new Set<string>();
+    const outHands: HandPose[] = [];
+
+    for (let i = 0; i < frame.hands.length; i++) {
+      const h = frame.hands[i]!;
+      const key = `${h.label}:${i}`;
+      seen.add(key);
+
+      const baseTau = Math.max(0.02, this.smoothTauSec);
+      const speed01 = clamp01(h.speed);
+      const tau = Math.max(0.02, Math.min(baseTau, baseTau / (1 + speed01 * 6.0)));
+      let a = 1 - Math.exp(-Math.max(0, dt) / tau);
+
+      const prevF = this.filtered.get(key);
+
+      // If tracking jumps or the hand is moving fast, reduce lag by snapping more aggressively.
+      if (prevF) {
+        const jump = dist(prevF.center, h.center);
+        if (jump > 0.09 || speed01 > 0.85) {
+          a = 1;
+        }
+      }
+
+      const nextCenter: Vec2 = prevF
+        ? {
+            x: prevF.center.x + (h.center.x - prevF.center.x) * a,
+            y: prevF.center.y + (h.center.y - prevF.center.y) * a
+          }
+        : h.center;
+
+      const nextWrist: Vec2 = prevF
+        ? {
+            x: prevF.wrist.x + (h.wrist.x - prevF.wrist.x) * a,
+            y: prevF.wrist.y + (h.wrist.y - prevF.wrist.y) * a
+          }
+        : h.wrist;
+
+      const nextPinch = prevF ? prevF.pinch + (h.pinch - prevF.pinch) * a : h.pinch;
+
+      let nextLandmarks: Vec2[] | undefined;
+      if (h.landmarks && h.landmarks.length >= 21) {
+        let buf = this.filteredLandmarkBuf.get(key);
+        if (!buf || buf.length !== 21) {
+          buf = new Array(21);
+          for (let j = 0; j < 21; j++) buf[j] = { x: 0, y: 0 };
+          this.filteredLandmarkBuf.set(key, buf);
+        }
+
+        const prevLm = prevF?.landmarks;
+        if (prevLm && prevLm.length === 21) {
+          for (let j = 0; j < 21; j++) {
+            const p = h.landmarks[j]!;
+            const o = buf[j]!;
+            const pp = prevLm[j]!;
+            o.x = pp.x + (p.x - pp.x) * a;
+            o.y = pp.y + (p.y - pp.y) * a;
+          }
+        } else {
+          for (let j = 0; j < 21; j++) {
+            const p = h.landmarks[j]!;
+            const o = buf[j]!;
+            o.x = p.x;
+            o.y = p.y;
+          }
+        }
+
+        nextLandmarks = buf;
+      }
+
+      this.filtered.set(key, {
+        center: nextCenter,
+        wrist: nextWrist,
+        pinch: nextPinch,
+        open: h.open,
+        fist: h.fist,
+        score: h.score,
+        landmarks: nextLandmarks
+      });
+
+      const prev = this.prevCenters.get(key);
+      const speed = prev ? clamp01(dist(prev, nextCenter) / Math.max(1e-6, dt) / 1.3) : 0;
+      this.prevCenters.set(key, nextCenter);
+
+      outHands.push({
+        label: h.label,
+        score: h.score,
+        landmarks: nextLandmarks,
+        center: nextCenter,
+        wrist: nextWrist,
+        pinch: nextPinch,
+        open: h.open,
+        fist: h.fist,
+        speed
+      });
+    }
+
+    for (const key of Array.from(this.filtered.keys())) {
+      if (!seen.has(key)) {
+        this.filtered.delete(key);
+        this.filteredLandmarkBuf.delete(key);
+        this.prevCenters.delete(key);
+      }
+    }
+
+    return { count: outHands.length, hands: outHands };
   }
 
   private updateTargetsFromResult(result: HandLandmarkerResult | null) {
