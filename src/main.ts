@@ -114,6 +114,17 @@ async function main() {
   hud.style.width = "420px";
   hud.style.maxWidth = "calc(100vw - 20px)";
 
+  const gestureHint = el("div");
+  gestureHint.style.padding = "8px 10px";
+  gestureHint.style.borderRadius = "0px";
+  gestureHint.style.background = "rgba(0,0,0,0.18)";
+  gestureHint.style.border = "1px solid rgba(120, 255, 230, 0.18)";
+  gestureHint.style.color = "rgba(223, 253, 245, 0.92)";
+  gestureHint.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  gestureHint.style.whiteSpace = "pre";
+  gestureHint.style.opacity = "0.92";
+  gestureHint.textContent = "Gestures\n- Pinch: hold\n- Move: change\n";
+
   const hudText = el("div");
   hudText.style.whiteSpace = "pre";
   hudText.textContent = "HUD";
@@ -130,6 +141,24 @@ async function main() {
 
   hud.appendChild(hudText);
   hud.appendChild(hudMeter);
+
+  const updateGestureHint = (mode: "performance" | "drone") => {
+    if (mode === "drone") {
+      gestureHint.textContent =
+        "Gestures (DRONE)\n" +
+        "- 🤏🫲 Left pinch: BASS\n" +
+        "- ↔️ Move L/R: pitch\n" +
+        "- 🤏🫱 Add right hand + pinch: GUITAR\n" +
+        "- 🫱⬆️⬇️ Right hand up/down: brightness\n";
+    } else {
+      gestureHint.textContent =
+        "Gestures (RAVE)\n" +
+        "- 🫲 Left hand: mix / flow\n" +
+        "- 🫱 Right hand: space / FX\n" +
+        "- 🫲🫱 Both hands: build / intensity\n" +
+        "- 🤏 Pinch: intensity\n";
+    }
+  };
 
   const hints = el("details", "hints");
   const hintsSummary = el("summary");
@@ -154,6 +183,7 @@ async function main() {
   panel.appendChild(controlsRow);
   panel.appendChild(togglesRow);
   panel.appendChild(status);
+  panel.appendChild(gestureHint);
   panel.appendChild(hints);
   ui.appendChild(panel);
   document.body.appendChild(ui);
@@ -435,6 +465,7 @@ async function main() {
   let audio: AudioEngine | null = null;
   let audioMode: "performance" | "drone" = "performance";
   let audioTrack: "rave" | "modern" | "melodic" = "rave";
+  updateGestureHint(audioMode);
   const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
   tracker.setWantLandmarks(overlayOn);
   const midi = new MidiInput();
@@ -977,6 +1008,7 @@ async function main() {
       return;
     }
     hud.style.display = "block";
+    updateGestureHint(audioMode);
 
     const now = performance.now();
     const age = Math.max(0, now - lastTickAt);
@@ -1266,6 +1298,7 @@ async function main() {
   modeBtn.addEventListener("click", () => {
     audioMode = audioMode === "drone" ? "performance" : "drone";
     modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
+    updateGestureHint(audioMode);
     audio?.setMode(audioMode);
   });
 

@@ -116,6 +116,12 @@ export class AudioEngine {
   private dronePickEnv = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: 0.06, sustain: 0, release: 0.02 } as any);
   private droneGateOn = false;
 
+  private droneSingleRole: "left" | "right" | null = null;
+  private droneSingleRoleUntil = 0;
+
+  private droneBeatNextT = 0;
+  private droneBeatStep = 0;
+
   private droneCMinorNotesLow: number[] | null = null;
   private droneCMinorNotesBass: number[] | null = null;
 
@@ -969,6 +975,8 @@ export class AudioEngine {
       if (mode === "performance") {
         const now = Tone.now();
         this.droneGateOn = false;
+        this.droneBeatNextT = 0;
+        this.droneBeatStep = 0;
         try {
           this.droneGain.gain.rampTo(0, 0.03);
         } catch {
@@ -998,6 +1006,9 @@ export class AudioEngine {
         this.introLead = 0;
         this.introPad = 0;
         this.releaseGesture(Tone.now());
+
+        this.droneBeatNextT = 0;
+        this.droneBeatStep = 0;
       }
     }
   }
@@ -1461,19 +1472,55 @@ export class AudioEngine {
           return ax - bx;
         });
 
-      const left = hs.length >= 1 ? hs[0]! : null;
-      const right = hs.length >= 2 ? hs[1]! : null;
+      const h0 = hs.length >= 1 ? hs[0]! : null;
+      const h1 = hs.length >= 2 ? hs[1]! : null;
 
-      const sep = right && left ? (right.center.x ?? 0.5) - (left.center.x ?? 0.5) : 0;
-      const twoHands = Boolean(right && left && sep > 0.12);
-      const rPinch = clamp01(twoHands ? right?.pinch ?? 0 : 0);
+      const single = Boolean(h0 && !h1);
+      const now = Tone.now();
+
+      if (!single) {
+        this.droneSingleRole = null;
+        this.droneSingleRoleUntil = 0;
+      }
+
+      let left: any = null;
+      let right: any = null;
+      let twoHands = false;
+      if (h0 && h1) {
+        left = h0;
+        right = h1;
+        const sep = (right.center.x ?? 0.5) - (left.center.x ?? 0.5);
+        twoHands = sep > 0.12;
+      } else if (h0) {
+        const label = typeof (h0 as any).label === "string" ? ((h0 as any).label as string) : "";
+        const pinch = clamp01((h0 as any).pinch ?? 0);
+
+        if (this.droneSingleRole && now < this.droneSingleRoleUntil) {
+          // keep
+        } else if (pinch > 0.06) {
+          // lock role on pinch start
+          if (label.toLowerCase() === "right") this.droneSingleRole = "right";
+          else if (label.toLowerCase() === "left") this.droneSingleRole = "left";
+          else this.droneSingleRole = "left";
+          this.droneSingleRoleUntil = now + 0.9;
+        } else {
+          this.droneSingleRole = null;
+          this.droneSingleRoleUntil = 0;
+        }
+
+        if (this.droneSingleRole === "right") right = h0;
+        else left = h0;
+      }
+
+      const guitarAllowed = Boolean((twoHands && right) || (!twoHands && right));
+
+      const rPinch = clamp01(guitarAllowed ? right?.pinch ?? 0 : 0);
       const lPinch = clamp01(left?.pinch ?? 0);
       const guitarOn = rPinch > 0.12;
       const bassOn = lPinch > 0.06;
-      const now = Tone.now();
 
       // Timbre/brightness (0=darker, 1=brighter)
-      const bright = clamp01(twoHands && right ? 1 - right.center.y : 0.5);
+      const bright = clamp01(guitarAllowed && right ? 1 - right.center.y : 0.5);
       this.droneFilter.frequency.rampTo(lerp(90, 900, bright), 0.10);
 
       this.droneDrive.distortion = lerp(0.75, 0.99, rPinch);
@@ -1505,7 +1552,7 @@ export class AudioEngine {
       if (!guitarOn) this.droneGateOn = false;
 
       // Pitch: very narrow low ranges.
-      const rx = clamp01(twoHands && right ? right.center.x : 0.5);
+      const rx = clamp01(guitarAllowed && right ? right.center.x : 0.5);
       const lx = clamp01(left ? left.center.x : 0.5);
 
       // Right hand: "guitar" layer (still low, but above the sub bass).
@@ -1546,6 +1593,46 @@ export class AudioEngine {
 
       // Bass tone: keep it mostly dark; open slightly with right-hand brightness.
       this.droneBassFilter.frequency.rampTo(lerp(90, 380, bright), 0.12);
+
+      if (this.droneBeatNextT <= 0) {
+        this.droneBeatNextT = now + 0.25;
+        this.droneBeatStep = 0;
+      }
+
+      if (now >= this.droneBeatNextT) {
+        const t0 = now + 0.02;
+        const step = (this.droneBeatStep++ | 0) % 16;
+
+        const base = 2.6;
+        const jitter = (Math.random() - 0.5) * 0.35;
+        let dt = base + jitter;
+
+        const mainThump = step % 4 === 0;
+        if (mainThump) {
+          const v = 0.18 + 0.12 * Math.random();
+          try {
+            this.kick.triggerAttackRelease("C0", "8n", t0, v);
+          } catch {
+          }
+
+          if (Math.random() < 0.22) {
+            try {
+              this.kick.triggerAttackRelease("C0", "16n", t0 + 0.16, v * 0.65);
+            } catch {
+            }
+          }
+
+          if (Math.random() < 0.18) {
+            try {
+              this.hat.triggerAttackRelease("32n", t0 + 0.42, 0.04);
+            } catch {
+            }
+          }
+        }
+
+        if (dt < 1.2) dt = 1.2;
+        this.droneBeatNextT = now + dt;
+      }
 
       const targetMaster = control.kill ? 0.0001 : 0.65;
       this.master.gain.rampTo(targetMaster, 0.06);
