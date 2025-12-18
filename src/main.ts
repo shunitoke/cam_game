@@ -81,12 +81,6 @@ async function main() {
   nextBtn.title = "Next Scene";
   nextBtn.disabled = true;
 
-  const safeBtn = el("button");
-  safeBtn.textContent = "LOW: OFF";
-  safeBtn.title = "Low render mode";
-  safeBtn.disabled = true;
-  let safeMode = false;
-
   const overlayBtn = el("button");
   overlayBtn.textContent = "OVR: ON";
   overlayBtn.title = "Hand Overlay";
@@ -177,7 +171,6 @@ async function main() {
   controlsRow.appendChild(nextBtn);
   controlsRow.appendChild(sceneBadge);
 
-  togglesRow.appendChild(safeBtn);
   togglesRow.appendChild(overlayBtn);
 
   panel.appendChild(controlsRow);
@@ -497,6 +490,9 @@ async function main() {
 
   let lastOverlayDrawAt = 0;
 
+  let autoLowVision = false;
+  let autoLowVisionSince = 0;
+
   const ema = (prev: number, next: number, a: number) => (prev ? prev + (next - prev) * a : next);
 
   let lastTickAt = performance.now();
@@ -646,7 +642,6 @@ async function main() {
       stopBtn.disabled = true;
       prevBtn.disabled = true;
       nextBtn.disabled = true;
-      safeBtn.disabled = true;
       sceneBadge.textContent = "Scene: (GPU reset)";
       void audio?.stop();
     },
@@ -776,6 +771,22 @@ async function main() {
       const t1 = performance.now();
       tTrackerMs = ema(tTrackerMs, t1 - t0, 0.12);
       handsSpan.textContent = String(hands.count);
+
+      {
+        const nowMs = performance.now();
+        const trAny: any = tracker as any;
+        const inferMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
+        const enable = hands.count > 0 && inferMs >= 18;
+        const disable = inferMs > 0 && inferMs <= 12;
+
+        if (!autoLowVision && enable && nowMs - autoLowVisionSince > 600) {
+          autoLowVision = true;
+          autoLowVisionSince = nowMs;
+        } else if (autoLowVision && disable && nowMs - autoLowVisionSince > 900) {
+          autoLowVision = false;
+          autoLowVisionSince = nowMs;
+        }
+      }
 
       if (camTrackOn) {
         const nowOv = performance.now();
@@ -915,7 +926,7 @@ async function main() {
         const now = performance.now();
         // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
         // cause GC/LongTasks if called every frame.
-        const minIntervalMs = 66; // ~15 Hz
+        const minIntervalMs = autoLowVision ? 120 : 66;
         if (!lastAudioVizAt || now - lastAudioVizAt >= minIntervalMs) {
           lastAudioVizAt = now;
           lastAudioViz = audio?.getWaveforms() ?? null;
@@ -987,7 +998,7 @@ async function main() {
       // Rendering at full rAF speed can starve Tone's scheduler on some machines.
       // Cap visual updates in the foreground.
       const nowVis = performance.now();
-      const targetFps = safeMode ? 30 : 45;
+      const targetFps = 45;
       const minVisualIntervalMs = 1000 / Math.max(1, targetFps);
       if (!lastVisualUpdateAt || nowVis - lastVisualUpdateAt >= minVisualIntervalMs) {
         lastVisualUpdateAt = nowVis;
@@ -1059,7 +1070,7 @@ async function main() {
       `\nheap ${heapStr}` +
       `\nLT ${lt}  GC ${gc}  ${lostStr}` +
       `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
-      `\nlow ${safeMode ? "on" : "off"}  cam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
+      `\ncam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
       `${workerErr ? `\nworkerErr ${workerErr}` : ""}` +
       `${audErr ? `\naudioErr ${audErr}` : ""}` +
       `\nerr ${lastErr ?? "-"}` +
@@ -1279,7 +1290,6 @@ async function main() {
     stopBtn.disabled = false;
     prevBtn.disabled = false;
     nextBtn.disabled = false;
-    safeBtn.disabled = false;
     overlayBtn.disabled = false;
     startBtn.textContent = "Enter Performance";
     lastT = performance.now();
@@ -1315,7 +1325,6 @@ async function main() {
     stopBtn.disabled = true;
     prevBtn.disabled = true;
     nextBtn.disabled = true;
-    safeBtn.disabled = true;
     overlayBtn.disabled = true;
     if (audioUpdateTimer !== null) {
       try {
@@ -1372,16 +1381,6 @@ async function main() {
     sceneBadge.textContent = `Scene: ${s.name}`;
     renderHints(s.id, s.name);
     audio?.setScene(s.id);
-  });
-
-  safeBtn.addEventListener("click", () => {
-    safeMode = !safeMode;
-    safeBtn.textContent = safeMode ? "LOW: ON" : "LOW: OFF";
-    visuals.setSafeMode(safeMode);
-    tracker.setSafeMode(safeMode);
-    overlay.setLowPower(safeMode);
-    overlay.setMaxDpr(safeMode ? 1.0 : 1.25);
-    audio?.setSafeMode(safeMode);
   });
 
   overlayBtn.addEventListener("click", () => {
@@ -1464,7 +1463,7 @@ async function main() {
         audSpan.textContent = "starting";
         audio.setTrack(audioTrack);
         audio.setMode(audioMode);
-        audio.setSafeMode(safeMode);
+        audio.setSafeMode(false);
         void audio.start();
         audSpan.textContent = "on";
         if (audioUpdateTimer === null && running) {

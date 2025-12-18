@@ -82,8 +82,8 @@ async function main() {
     nextBtn.title = "Next Scene";
     nextBtn.disabled = true;
     const safeBtn = el("button");
-    safeBtn.textContent = "SAFE: OFF";
-    safeBtn.title = "Safe Mode";
+    safeBtn.textContent = "LOW: OFF";
+    safeBtn.title = "Low render mode";
     safeBtn.disabled = true;
     let safeMode = false;
     const overlayBtn = el("button");
@@ -95,6 +95,61 @@ async function main() {
     sceneBadge.textContent = "Scene: Particles";
     const status = el("div");
     status.innerHTML = `<small>Camera: <span id="cam">idle</span> · Audio: <span id="aud">idle</span> · MIDI: <span id="midi">idle</span> · Hands: <span id="hands">0</span></small>`;
+    const hud = el("div");
+    hud.style.position = "fixed";
+    hud.style.left = "10px";
+    hud.style.bottom = "10px";
+    hud.style.zIndex = "9999";
+    hud.style.padding = "8px 10px";
+    hud.style.borderRadius = "10px";
+    hud.style.background = "rgba(0,0,0,0.55)";
+    hud.style.color = "rgba(255,255,255,0.92)";
+    hud.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    hud.style.pointerEvents = "none";
+    hud.style.whiteSpace = "normal";
+    hud.style.width = "420px";
+    hud.style.maxWidth = "calc(100vw - 20px)";
+    const gestureHint = el("div");
+    gestureHint.style.padding = "8px 10px";
+    gestureHint.style.borderRadius = "0px";
+    gestureHint.style.background = "rgba(0,0,0,0.18)";
+    gestureHint.style.border = "1px solid rgba(120, 255, 230, 0.18)";
+    gestureHint.style.color = "rgba(223, 253, 245, 0.92)";
+    gestureHint.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    gestureHint.style.whiteSpace = "pre";
+    gestureHint.style.opacity = "0.92";
+    gestureHint.textContent = "Gestures\n- Pinch: hold\n- Move: change\n";
+    const hudText = el("div");
+    hudText.style.whiteSpace = "pre";
+    hudText.textContent = "HUD";
+    const hudMeter = el("canvas");
+    hudMeter.width = 420;
+    hudMeter.height = 56;
+    hudMeter.style.display = "block";
+    hudMeter.style.marginTop = "6px";
+    hudMeter.style.width = "100%";
+    hudMeter.style.height = "56px";
+    const hudMeterCtx = hudMeter.getContext("2d");
+    hud.appendChild(hudText);
+    hud.appendChild(hudMeter);
+    const updateGestureHint = (mode) => {
+        if (mode === "drone") {
+            gestureHint.textContent =
+                "Gestures (DRONE)\n" +
+                    "- 🤏🫲 Left pinch: BASS\n" +
+                    "- ↔️ Move L/R: pitch\n" +
+                    "- 🤏🫱 Add right hand + pinch: GUITAR\n" +
+                    "- 🫱⬆️⬇️ Right hand up/down: brightness\n";
+        }
+        else {
+            gestureHint.textContent =
+                "Gestures (RAVE)\n" +
+                    "- 🫲 Left hand: mix / flow\n" +
+                    "- 🫱 Right hand: space / FX\n" +
+                    "- 🫲🫱 Both hands: build / intensity\n" +
+                    "- 🤏 Pinch: intensity\n";
+        }
+    };
     const hints = el("details", "hints");
     const hintsSummary = el("summary");
     hintsSummary.textContent = "Hints";
@@ -114,9 +169,11 @@ async function main() {
     panel.appendChild(controlsRow);
     panel.appendChild(togglesRow);
     panel.appendChild(status);
+    panel.appendChild(gestureHint);
     panel.appendChild(hints);
     ui.appendChild(panel);
     document.body.appendChild(ui);
+    document.body.appendChild(hud);
     const videoWrap = el("div", "videoPreview");
     const video = el("video");
     video.autoplay = true;
@@ -191,7 +248,7 @@ async function main() {
                 ["Right Y", "speed"],
                 ["Build", "detail + intensity"],
                 ["MIDI note", "shock / motion"],
-                ["SAFE mode", "lower octaves"],
+                ["LOW mode", "lower octaves"],
                 ["R", "reset"]
             ]
         },
@@ -216,7 +273,7 @@ async function main() {
                 ["Right speed", "quality (steps)"],
                 ["Build", "aggression"],
                 ["MIDI note", "flash"],
-                ["SAFE mode", "lower steps"],
+                ["LOW mode", "lower steps"],
                 ["R", "reset"]
             ]
         },
@@ -228,7 +285,7 @@ async function main() {
                 ["Right pinch", "brush (paint B)"],
                 ["Build", "sim speed"],
                 ["MIDI note", "kick agitation"],
-                ["SAFE mode", "lower sim res"],
+                ["LOW mode", "lower sim res"],
                 ["R", "reseed"]
             ]
         },
@@ -248,7 +305,7 @@ async function main() {
                 ["Build", "growth speed"],
                 ["Left hand", "energy bias"],
                 ["MIDI note", "faster climbing"],
-                ["SAFE mode", "lower-res but stable"],
+                ["LOW mode", "lower-res but stable"],
                 ["R", "reset growth"]
             ]
         },
@@ -323,7 +380,7 @@ async function main() {
                 ["Right pinch", "warp amount"],
                 ["Build", "detail + intensity"],
                 ["MIDI note", "burst"],
-                ["SAFE mode", "fewer octaves"],
+                ["LOW mode", "fewer octaves"],
                 ["R", "reset"]
             ]
         },
@@ -334,7 +391,7 @@ async function main() {
                 ["Right pinch", "twist"],
                 ["Build", "segments + motion"],
                 ["MIDI note", "burst"],
-                ["SAFE mode", "lower detail"],
+                ["LOW mode", "lower detail"],
                 ["R", "reset"]
             ]
         },
@@ -345,7 +402,7 @@ async function main() {
                 ["Right pinch", "threshold / glow"],
                 ["Build", "more blobs"],
                 ["MIDI note", "burst"],
-                ["SAFE mode", "fewer blobs"],
+                ["LOW mode", "fewer blobs"],
                 ["R", "reset"]
             ]
         },
@@ -382,8 +439,42 @@ async function main() {
     overlay.setMaxDpr(1.25);
     let audio = null;
     let audioMode = "performance";
+    let audioTrack = "rave";
+    updateGestureHint(audioMode);
     const tracker = new HandTracker({ maxHands: 2, mirrorX: true });
+    tracker.setWantLandmarks(overlayOn);
     const midi = new MidiInput();
+    let hudOn = true;
+    let camTrackOn = true;
+    let camInferOn = true;
+    let audioVizOn = true;
+    let gpuRenderOn = true;
+    let audioOn = true;
+    let fpsEma = 0;
+    let longFrames = 0;
+    let lastHudAt = 0;
+    let lastDtMs = 16.7;
+    let lastRawDtMs = 16.7;
+    let tTrackerMs = 0;
+    let tMidiMs = 0;
+    let tVizMs = 0;
+    let tAudioMs = 0;
+    let tVisualsMs = 0;
+    let tTickMs = 0;
+    let lastVisualUpdateAt = 0;
+    let audioUpdateTimer = null;
+    let lastControlForAudio = null;
+    let lastOverlayDrawAt = 0;
+    const ema = (prev, next, a) => (prev ? prev + (next - prev) * a : next);
+    let lastTickAt = performance.now();
+    let tickCount = 0;
+    let lastErr = null;
+    let lastRej = null;
+    let lastWebglLostAt = 0;
+    let longTaskCount = 0;
+    let longTaskMs = 0;
+    let gcCount = 0;
+    let gcMs = 0;
     const midiHeld = new Set();
     const midiVel = new Map();
     const midiFlashT = new Map();
@@ -465,10 +556,62 @@ async function main() {
     let overlayMode = "keyboard";
     let running = false;
     let lastT = performance.now();
+    let wasHidden = document.visibilityState !== "visible";
     let beatViz = 0;
+    let lastAudioVizAt = 0;
+    let lastAudioViz = null;
+    let stallScore = 0;
+    let lastAutoTrackerRestartAt = 0;
+    let severeStallScore = 0;
+    let lastAutoReloadAt = 0;
+    let reloadRequested = false;
+    const requestReload = (reason) => {
+        if (reloadRequested)
+            return;
+        reloadRequested = true;
+        try {
+            lastErr = `reload:${reason}`;
+        }
+        catch {
+        }
+        try {
+            running = false;
+        }
+        catch {
+        }
+        try {
+            void audio?.stop();
+        }
+        catch {
+        }
+        try {
+            tracker.stop();
+        }
+        catch {
+        }
+        try {
+            midi.stop();
+        }
+        catch {
+        }
+        try {
+            video.srcObject = null;
+        }
+        catch {
+        }
+        try {
+            void video.pause();
+        }
+        catch {
+        }
+        window.setTimeout(() => {
+            window.location.reload();
+        }, 60);
+    };
     canvas.addEventListener("webglcontextlost", (e) => {
         e.preventDefault();
         running = false;
+        lastWebglLostAt = performance.now();
         camSpan.textContent = "on";
         audSpan.textContent = "off";
         stopBtn.disabled = true;
@@ -481,175 +624,506 @@ async function main() {
     canvas.addEventListener("webglcontextrestored", () => {
         sceneBadge.textContent = `Scene: ${visuals.current.name}`;
     });
+    window.addEventListener("error", (ev) => {
+        try {
+            lastErr = ev.error instanceof Error ? ev.error.message : String(ev.message ?? ev);
+        }
+        catch {
+            lastErr = "unknown error";
+        }
+    });
+    window.addEventListener("unhandledrejection", (ev) => {
+        try {
+            const r = ev.reason;
+            lastRej = r instanceof Error ? r.message : String(r);
+        }
+        catch {
+            lastRej = "unhandled rejection";
+        }
+    });
+    try {
+        const anyWin = window;
+        if (typeof anyWin.PerformanceObserver === "function") {
+            const po = new anyWin.PerformanceObserver((list) => {
+                try {
+                    const entries = list.getEntries?.() ?? [];
+                    for (const e of entries) {
+                        longTaskCount++;
+                        const d = typeof e?.duration === "number" ? e.duration : 0;
+                        longTaskMs += d;
+                    }
+                }
+                catch {
+                    // ignore
+                }
+            });
+            po.observe({ entryTypes: ["longtask"] });
+            try {
+                const poGc = new anyWin.PerformanceObserver((list) => {
+                    try {
+                        const entries = list.getEntries?.() ?? [];
+                        for (const e of entries) {
+                            gcCount++;
+                            const d = typeof e?.duration === "number" ? e.duration : 0;
+                            gcMs += d;
+                        }
+                    }
+                    catch {
+                        // ignore
+                    }
+                });
+                poGc.observe({ entryTypes: ["gc"] });
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    catch {
+        // ignore
+    }
     const tick = (t) => {
         if (!running)
             return;
-        const dt = Math.max(0.001, (t - lastT) / 1000);
-        lastT = t;
-        const hands = tracker.update(t, dt);
-        handsSpan.textContent = String(hands.count);
-        overlay.draw(hands.hands);
-        const control = controlBus.update({ t, dt, hands });
-        const midiStatus = midi.getStatus();
-        if (!midiStatus.supported) {
-            midiSpan.textContent = "off";
-            midiSpan.title = "WebMIDI unsupported in this browser";
-        }
-        else if (midiStatus.error) {
-            midiSpan.textContent = "err";
-            midiSpan.title = `MIDI error: ${midiStatus.error}`;
-        }
-        else if (!midiStatus.inputs) {
-            midiSpan.textContent = "on(0)";
-            midiSpan.title = "No MIDI inputs detected";
-        }
-        else {
-            midiSpan.textContent = `on(${midiStatus.inputs})`;
-            midiSpan.title = `Inputs: ${midiStatus.names.join(", ")}`;
-        }
-        const overlayOnNow = running;
-        if (overlayOnNow !== midiOverlayWasOn) {
-            midiOverlayWasOn = overlayOnNow;
-            midiOverlay.style.display = overlayOnNow ? "block" : "none";
-        }
-        overlayMode = !!midiStatus.supported && !midiStatus.error && midiStatus.inputs > 0 ? "midi" : "keyboard";
-        if (overlayOnNow) {
-            if (overlayMode === "midi") {
-                midiOverlayTitle.textContent = "NanoKey2";
-                midiOverlaySub.textContent = midiStatus.names.length ? midiStatus.names.join(", ") : "MIDI device";
+        try {
+            tickCount++;
+            lastTickAt = performance.now();
+            // If the page is hidden/occluded, browsers can throttle rAF to a few FPS or even
+            // seconds per frame. Reset timing and skip heavy work to avoid massive dt spikes.
+            const vis = document.visibilityState;
+            if (vis !== "visible") {
+                lastT = t;
+                lastDtMs = 0;
+                return;
+            }
+            // Clamp dt so a long pause (tab switch, breakpoint, throttling) doesn't explode sim.
+            const rawDt = Math.max(0.001, (t - lastT) / 1000);
+            const dt = Math.min(0.05, rawDt);
+            lastT = t;
+            lastDtMs = dt * 1000;
+            lastRawDtMs = rawDt * 1000;
+            const nowMs = performance.now();
+            if (camTrackOn && camInferOn && rawDt > 0.22) {
+                stallScore += 1;
             }
             else {
-                midiOverlayTitle.textContent = "Keyboard";
-                midiOverlaySub.textContent = "A W S E D F T G Y H U J";
+                stallScore = Math.max(0, stallScore - 0.25);
             }
-        }
-        if (!midiRateWindowStart)
-            midiRateWindowStart = t;
-        if (t - midiRateWindowStart > 800) {
-            const secs = Math.max(0.001, (t - midiRateWindowStart) / 1000);
-            midiRate = midiEventsSince / secs;
-            midiEventsSince = 0;
-            midiRateWindowStart = t;
-        }
-        if (midiLastEventAt > 0) {
-            const ageMs = Math.max(0, t - midiLastEventAt);
-            midiOverlayAct.textContent = `activity: ${ageMs < 999 ? Math.round(ageMs) + "ms" : (ageMs / 1000).toFixed(1) + "s"} · ${midiRate.toFixed(1)}/s`;
-        }
-        else {
-            midiOverlayAct.textContent = `activity: - · ${midiRate.toFixed(1)}/s`;
-        }
-        // Process MIDI in chunks to avoid frame stalls on event storms
-        let burst = 0;
-        const pending = midi.pending();
-        if (pending > 320) {
-            midi.dropOldest(pending - 320);
-        }
-        const midiStart = performance.now();
-        const midiBudgetMs = 1.25;
-        if (overlayMode === "midi") {
-            while (performance.now() - midiStart < midiBudgetMs) {
-                const midiEvents = midi.consume(32);
-                if (!midiEvents.length)
-                    break;
-                midiEventsSince += midiEvents.length;
-                for (const e of midiEvents) {
-                    midiLastEventAt = t;
-                    if (e.type === "noteon" && e.note === 47)
-                        burst += 0.08 + 0.12 * e.velocity;
-                    if (e.type === "noteon") {
-                        midiHeld.add(e.note);
-                        midiVel.set(e.note, clamp01(e.velocity));
-                        midiFlashT.set(e.note, t);
+            if (stallScore >= 3 && nowMs - lastAutoTrackerRestartAt > 15000) {
+                lastAutoTrackerRestartAt = nowMs;
+                stallScore = 0;
+                const trAny = tracker;
+                void trAny.restartLandmarker?.();
+            }
+            if (camTrackOn && camInferOn && rawDt > 0.45) {
+                severeStallScore += 1;
+            }
+            else {
+                severeStallScore = Math.max(0, severeStallScore - 0.2);
+            }
+            if (severeStallScore >= 4 &&
+                nowMs - lastAutoReloadAt > 45000 &&
+                nowMs - lastAutoTrackerRestartAt < 20000) {
+                lastAutoReloadAt = nowMs;
+                severeStallScore = 0;
+                requestReload("auto");
+                return;
+            }
+            const fpsNow = 1 / Math.max(1e-6, rawDt);
+            fpsEma = fpsEma ? fpsEma + (fpsNow - fpsEma) * 0.06 : fpsNow;
+            if (rawDt > 0.033)
+                longFrames++;
+            const tickStart = performance.now();
+            const t0 = performance.now();
+            const hands = camTrackOn ? tracker.update(t, dt) : { count: 0, hands: [] };
+            const t1 = performance.now();
+            tTrackerMs = ema(tTrackerMs, t1 - t0, 0.12);
+            handsSpan.textContent = String(hands.count);
+            if (camTrackOn) {
+                const nowOv = performance.now();
+                const minOverlayIntervalMs = 50;
+                if (!lastOverlayDrawAt || nowOv - lastOverlayDrawAt >= minOverlayIntervalMs) {
+                    lastOverlayDrawAt = nowOv;
+                    overlay.draw(hands.hands);
+                }
+            }
+            else {
+                overlay.draw([]);
+            }
+            const control = controlBus.update({ t, dt, hands });
+            // Render the HUD meter at full rAF speed (independent from the throttled HUD text).
+            // Uses lastAudioViz which is already throttled upstream.
+            if (hudOn && audioVizOn) {
+                try {
+                    renderHudMeter();
+                }
+                catch {
+                    // ignore
+                }
+            }
+            const midiT0 = performance.now();
+            const midiStatus = midi.getStatus();
+            if (!midiStatus.supported) {
+                midiSpan.textContent = "off";
+                midiSpan.title = "WebMIDI unsupported in this browser";
+            }
+            else if (midiStatus.error) {
+                midiSpan.textContent = "err";
+                midiSpan.title = `MIDI error: ${midiStatus.error}`;
+            }
+            else if (!midiStatus.inputs) {
+                midiSpan.textContent = "on(0)";
+                midiSpan.title = "No MIDI inputs detected";
+            }
+            else {
+                midiSpan.textContent = `on(${midiStatus.inputs})`;
+                midiSpan.title = `Inputs: ${midiStatus.names.join(", ")}`;
+            }
+            const overlayOnNow = running;
+            if (overlayOnNow !== midiOverlayWasOn) {
+                midiOverlayWasOn = overlayOnNow;
+                midiOverlay.style.display = overlayOnNow ? "block" : "none";
+            }
+            overlayMode = !!midiStatus.supported && !midiStatus.error && midiStatus.inputs > 0 ? "midi" : "keyboard";
+            if (overlayOnNow) {
+                if (overlayMode === "midi") {
+                    midiOverlayTitle.textContent = "NanoKey2";
+                    midiOverlaySub.textContent = midiStatus.names.length ? midiStatus.names.join(", ") : "MIDI device";
+                }
+                else {
+                    midiOverlayTitle.textContent = "Keyboard";
+                    midiOverlaySub.textContent = "A W S E D F T G Y H U J";
+                }
+            }
+            if (!midiRateWindowStart)
+                midiRateWindowStart = t;
+            if (t - midiRateWindowStart > 800) {
+                const secs = Math.max(0.001, (t - midiRateWindowStart) / 1000);
+                midiRate = midiEventsSince / secs;
+                midiEventsSince = 0;
+                midiRateWindowStart = t;
+            }
+            if (midiLastEventAt > 0) {
+                const ageMs = Math.max(0, t - midiLastEventAt);
+                midiOverlayAct.textContent = `activity: ${ageMs < 999 ? Math.round(ageMs) + "ms" : (ageMs / 1000).toFixed(1) + "s"} · ${midiRate.toFixed(1)}/s`;
+            }
+            else {
+                midiOverlayAct.textContent = `activity: - · ${midiRate.toFixed(1)}/s`;
+            }
+            // Process MIDI in chunks to avoid frame stalls on event storms
+            let burst = 0;
+            const pending = midi.pending();
+            if (pending > 320) {
+                midi.dropOldest(pending - 320);
+            }
+            const midiStart = performance.now();
+            const midiBudgetMs = 1.25;
+            if (overlayMode === "midi") {
+                while (performance.now() - midiStart < midiBudgetMs) {
+                    const midiEvents = midi.consume(32);
+                    if (!midiEvents.length)
+                        break;
+                    midiEventsSince += midiEvents.length;
+                    for (const e of midiEvents) {
+                        midiLastEventAt = t;
+                        if (e.type === "noteon" && e.note === 47)
+                            burst += 0.08 + 0.12 * e.velocity;
+                        if (e.type === "noteon") {
+                            midiHeld.add(e.note);
+                            midiVel.set(e.note, clamp01(e.velocity));
+                            midiFlashT.set(e.note, t);
+                        }
+                        if (e.type === "noteoff") {
+                            midiHeld.delete(e.note);
+                            midiVel.set(e.note, clamp01(e.velocity));
+                        }
                     }
-                    if (e.type === "noteoff") {
-                        midiHeld.delete(e.note);
-                        midiVel.set(e.note, clamp01(e.velocity));
+                    audio?.handleMidi(midiEvents);
+                }
+            }
+            const midiT1 = performance.now();
+            tMidiMs = ema(tMidiMs, midiT1 - midiT0, 0.12);
+            if (midiOverlayWasOn) {
+                for (let n = midiMin; n <= midiMax; n++) {
+                    const k = midiKeyEls.get(n);
+                    if (!k)
+                        continue;
+                    const held = midiHeld.has(n);
+                    const role = midiRole(n);
+                    k.classList.toggle("held", held);
+                    k.dataset.role = role;
+                    const top = k.querySelector(".midiKeyTop");
+                    if (top) {
+                        top.textContent = overlayMode === "midi" ? midiNoteName(n) : (k.dataset.kb ?? "");
+                    }
+                    const ft = midiFlashT.get(n) ?? -999;
+                    const flash = ft > 0 ? Math.max(0, 1 - (t - ft) / 160) : 0;
+                    const vel = midiVel.get(n) ?? 0;
+                    const a = held ? 0.9 : 0.25;
+                    const glow = 0.15 + 0.85 * flash;
+                    k.style.opacity = String(a);
+                    k.style.setProperty("--midiVel", String(vel));
+                    k.style.setProperty("--midiFlash", String(glow));
+                }
+            }
+            if (burst > 0) {
+                visuals.triggerBurst(Math.min(1.5, burst));
+            }
+            const vizT0 = performance.now();
+            let audioViz = null;
+            if (audioVizOn) {
+                const now = performance.now();
+                // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
+                // cause GC/LongTasks if called every frame.
+                const minIntervalMs = 66; // ~15 Hz
+                if (!lastAudioVizAt || now - lastAudioVizAt >= minIntervalMs) {
+                    lastAudioVizAt = now;
+                    lastAudioViz = audio?.getWaveforms() ?? null;
+                }
+                audioViz = lastAudioViz;
+            }
+            const vizT1 = performance.now();
+            tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
+            const beatPulse = audio?.getPulse?.() ?? 0;
+            if (audioViz) {
+                control.audioViz = audioViz;
+                const kick = audioViz.kick;
+                let peak = 0;
+                if (kick && kick.length) {
+                    const n = Math.min(256, kick.length);
+                    for (let i = 0; i < n; i += 4) {
+                        const v = Math.abs(kick[i] ?? 0);
+                        if (v > peak)
+                            peak = v;
                     }
                 }
-                audio?.handleMidi(midiEvents);
-            }
-        }
-        if (midiOverlayWasOn) {
-            for (let n = midiMin; n <= midiMax; n++) {
-                const k = midiKeyEls.get(n);
-                if (!k)
-                    continue;
-                const held = midiHeld.has(n);
-                const role = midiRole(n);
-                k.classList.toggle("held", held);
-                k.dataset.role = role;
-                const top = k.querySelector(".midiKeyTop");
-                if (top) {
-                    top.textContent = overlayMode === "midi" ? midiNoteName(n) : (k.dataset.kb ?? "");
+                const fft = audioViz.fft;
+                let low = 0;
+                if (fft && fft.length) {
+                    const bins = Math.min(24, fft.length);
+                    let sum = 0;
+                    for (let i = 0; i < bins; i++) {
+                        const db = fft[i] ?? -120;
+                        const m = Math.min(1, Math.max(0, (db + 120) / 120));
+                        sum += m;
+                    }
+                    low = bins ? sum / bins : 0;
                 }
-                const ft = midiFlashT.get(n) ?? -999;
-                const flash = ft > 0 ? Math.max(0, 1 - (t - ft) / 160) : 0;
-                const vel = midiVel.get(n) ?? 0;
-                const a = held ? 0.9 : 0.25;
-                const glow = 0.15 + 0.85 * flash;
-                k.style.opacity = String(a);
-                k.style.setProperty("--midiVel", String(vel));
-                k.style.setProperty("--midiFlash", String(glow));
+                const target = Math.min(1, Math.max(peak * 3.5, low * 1.25));
+                const dt = Math.min(0.033, control.dt ?? 0.016);
+                const a = 1 - Math.exp(-dt * 26);
+                beatViz = beatViz + (target - beatViz) * a;
+                beatViz = Math.max(0, beatViz - dt * 1.75);
             }
-        }
-        if (burst > 0) {
-            visuals.triggerBurst(Math.min(1.5, burst));
-        }
-        const audioViz = audio?.getWaveforms();
-        const beatPulse = audio?.getPulse?.() ?? 0;
-        if (audioViz) {
-            control.audioViz = audioViz;
-            const kick = audioViz.kick;
-            let peak = 0;
-            if (kick && kick.length) {
-                const n = Math.min(256, kick.length);
-                for (let i = 0; i < n; i += 4) {
-                    const v = Math.abs(kick[i] ?? 0);
-                    if (v > peak)
-                        peak = v;
-                }
+            else {
+                beatViz = Math.max(0, beatViz - control.dt * 1.75);
             }
-            const fft = audioViz.fft;
-            let low = 0;
-            if (fft && fft.length) {
-                const bins = Math.min(24, fft.length);
-                let sum = 0;
-                for (let i = 0; i < bins; i++) {
-                    const db = fft[i] ?? -120;
-                    const m = Math.min(1, Math.max(0, (db + 120) / 120));
-                    sum += m;
-                }
-                low = bins ? sum / bins : 0;
+            const bpOut = audioMode === "performance"
+                ? beatPulse
+                : Math.max(beatPulse, beatViz);
+            control.beatPulse = bpOut;
+            if (running)
+                audSpan.title = `beat: ${bpOut.toFixed(3)}`;
+            const controlWithViz = control;
+            lastControlForAudio = controlWithViz;
+            const sceneDelta = controlWithViz.events.sceneDelta;
+            if (sceneDelta !== 0) {
+                const s = visuals.nextScene(sceneDelta);
+                sceneBadge.textContent = `Scene: ${s.name}`;
+                renderHints(s.id, s.name);
+                audio?.setScene(s.id);
             }
-            const target = Math.min(1, Math.max(peak * 3.5, low * 1.25));
-            const dt = Math.min(0.033, control.dt ?? 0.016);
-            const a = 1 - Math.exp(-dt * 26);
-            beatViz = beatViz + (target - beatViz) * a;
-            beatViz = Math.max(0, beatViz - dt * 1.75);
+            if (controlWithViz.events.reset) {
+                audio?.reset();
+                visuals.reset();
+            }
+            const vT0 = performance.now();
+            // Rendering at full rAF speed can starve Tone's scheduler on some machines.
+            // Cap visual updates in the foreground.
+            const nowVis = performance.now();
+            const targetFps = safeMode ? 30 : 45;
+            const minVisualIntervalMs = 1000 / Math.max(1, targetFps);
+            if (!lastVisualUpdateAt || nowVis - lastVisualUpdateAt >= minVisualIntervalMs) {
+                lastVisualUpdateAt = nowVis;
+                visuals.update(controlWithViz);
+            }
+            const vT1 = performance.now();
+            tVisualsMs = ema(tVisualsMs, vT1 - vT0, 0.12);
+            const tickEnd = performance.now();
+            tTickMs = ema(tTickMs, tickEnd - tickStart, 0.12);
         }
-        else {
-            beatViz = Math.max(0, beatViz - control.dt * 1.75);
+        catch (e) {
+            lastErr = errMsg(e);
+            console.error(e);
         }
-        const bpOut = Math.max(beatPulse, beatViz);
-        control.beatPulse = bpOut;
-        if (running)
-            audSpan.title = `beat: ${bpOut.toFixed(3)}`;
-        const controlWithViz = control;
-        const sceneDelta = controlWithViz.events.sceneDelta;
-        if (sceneDelta !== 0) {
-            const s = visuals.nextScene(sceneDelta);
-            sceneBadge.textContent = `Scene: ${s.name}`;
-            renderHints(s.id, s.name);
-            audio?.setScene(s.id);
+        finally {
+            if (running)
+                requestAnimationFrame(tick);
         }
-        if (controlWithViz.events.reset) {
-            audio?.reset();
-            visuals.reset();
-        }
-        audio?.update(controlWithViz);
-        visuals.update(controlWithViz);
-        requestAnimationFrame(tick);
     };
+    document.addEventListener("visibilitychange", () => {
+        const hidden = document.visibilityState !== "visible";
+        if (hidden !== wasHidden) {
+            wasHidden = hidden;
+            // Reset timers so returning to the tab doesn't produce a huge dt.
+            lastT = performance.now();
+            lastTickAt = performance.now();
+        }
+    });
+    const renderHud = () => {
+        if (!hudOn) {
+            hud.style.display = "none";
+            return;
+        }
+        hud.style.display = "block";
+        updateGestureHint(audioMode);
+        const now = performance.now();
+        const age = Math.max(0, now - lastTickAt);
+        const vis = document.visibilityState;
+        const mem = performance.memory;
+        const heapMb = mem?.usedJSHeapSize ? mem.usedJSHeapSize / (1024 * 1024) : null;
+        const heapLimitMb = mem?.jsHeapSizeLimit ? mem.jsHeapSizeLimit / (1024 * 1024) : null;
+        const heapStr = heapMb != null ? `${heapMb.toFixed(1)}${heapLimitMb ? "/" + heapLimitMb.toFixed(0) : ""} MB` : "n/a";
+        const lostStr = lastWebglLostAt ? `webglLost ${Math.round((now - lastWebglLostAt) / 1000)}s ago` : "webgl ok";
+        const lt = longTaskCount ? `${longTaskCount} / ${Math.round(longTaskMs)}ms` : "0";
+        const gc = gcCount ? `${gcCount} / ${Math.round(gcMs)}ms` : "0";
+        const trAny = tracker;
+        const infPauseMs = camTrackOn && camInferOn ? (trAny.getInferPauseMs?.(now) ?? 0) : 0;
+        const infLastMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
+        const infBackend = camTrackOn && camInferOn ? (trAny.getInferBackend?.() ?? "main") : "off";
+        const workerErr = camTrackOn && camInferOn ? (trAny.getWorkerError?.() ?? null) : null;
+        const audAny = audio;
+        const audErr = audioOn ? (audAny?.getLastError?.() ?? null) : null;
+        const infStr = !camInferOn
+            ? "off"
+            : infPauseMs > 0
+                ? `cool ${Math.round(infPauseMs)}ms`
+                : `on ${infBackend} ${Math.round(infLastMs)}ms`;
+        hudText.textContent =
+            `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
+                `\nage ${age.toFixed(0)}ms  ticks ${tickCount}  vis ${vis}` +
+                `\nheap ${heapStr}` +
+                `\nLT ${lt}  GC ${gc}  ${lostStr}` +
+                `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
+                `\nlow ${safeMode ? "on" : "off"}  cam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
+                `${workerErr ? `\nworkerErr ${workerErr}` : ""}` +
+                `${audErr ? `\naudioErr ${audErr}` : ""}` +
+                `\nerr ${lastErr ?? "-"}` +
+                `\nrej ${lastRej ?? "-"}` +
+                `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;
+    };
+    const renderHudMeter = () => {
+        if (!hudOn)
+            return;
+        if (!audioVizOn)
+            return;
+        if (!hudMeterCtx)
+            return;
+        const cssW = Math.max(260, Math.min(720, Math.floor(hud.getBoundingClientRect().width)));
+        const cssH = 56;
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const w = Math.max(1, Math.floor(cssW * dpr));
+        const h = Math.max(1, Math.floor(cssH * dpr));
+        if (hudMeter.width !== w || hudMeter.height !== h) {
+            hudMeter.width = w;
+            hudMeter.height = h;
+        }
+        const ctx = hudMeterCtx;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        const pack = lastAudioViz;
+        const fft = pack?.fft;
+        const wave = pack?.kick ||
+            pack?.bass ||
+            pack?.hat ||
+            pack?.lead ||
+            pack?.simpleLead ||
+            pack?.pad ||
+            pack?.stab;
+        const padL = 0;
+        const padT = 0;
+        const ww = w - padL;
+        const hh = h - padT;
+        const midY = padT + hh * 0.52;
+        if (fft && fft.length >= 8) {
+            const startBin = 1;
+            const endBin = fft.length;
+            const span = Math.max(1, endBin - startBin);
+            const bars = Math.max(32, Math.min(96, Math.floor(ww / Math.max(3, 4.0 * dpr))));
+            const baseY = padT + hh * 0.55;
+            const lnA = Math.log(Math.max(2, startBin));
+            const lnB = Math.log(Math.max(startBin + 1, endBin));
+            const lnSpan = Math.max(1e-6, lnB - lnA);
+            // Compute per-band peak dB (max pooling) using log-spaced bins.
+            let maxDb = -Infinity;
+            const bandDb = new Array(bars);
+            for (let bi = 0; bi < bars; bi++) {
+                const t0 = bi / bars;
+                const t1 = (bi + 1) / bars;
+                const i0 = startBin + Math.floor(Math.exp(lnA + t0 * lnSpan));
+                const i1 = startBin + Math.floor(Math.exp(lnA + t1 * lnSpan));
+                const a = Math.max(startBin, Math.min(endBin - 1, i0));
+                const b = Math.max(a + 1, Math.min(endBin, i1));
+                let peak = -Infinity;
+                for (let k = a; k < b; k++) {
+                    const db = fft[k] ?? -120;
+                    if (db > peak)
+                        peak = db;
+                }
+                // Gentle HF tilt so mids/highs are readable without dominating.
+                const centerT = (bi + 0.5) / bars;
+                const tiltDb = centerT * 14;
+                const adj = peak + tiltDb;
+                bandDb[bi] = adj;
+                if (adj > maxDb)
+                    maxDb = adj;
+            }
+            if (!Number.isFinite(maxDb))
+                maxDb = -60;
+            const topDb = Math.min(-10, maxDb - 4);
+            const minDb = Math.max(-120, topDb - 80);
+            const invRange = 1 / Math.max(1e-6, topDb - minDb);
+            ctx.lineWidth = Math.max(1, dpr);
+            ctx.strokeStyle = "rgba(255,255,255,0.65)";
+            for (let bi = 0; bi < bars; bi++) {
+                const t = bi / Math.max(1, bars - 1);
+                let m = (bandDb[bi] - minDb) * invRange;
+                m = Math.min(1, Math.max(0, m));
+                m = Math.pow(m, 0.75);
+                const x = padL + t * ww;
+                const y = baseY - m * (hh * 0.52);
+                ctx.beginPath();
+                ctx.moveTo(x, baseY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            }
+        }
+        if (wave && wave.length >= 8) {
+            const n = Math.min(128, wave.length);
+            ctx.lineWidth = Math.max(1, dpr);
+            ctx.strokeStyle = "rgba(0,255,220,0.75)";
+            ctx.beginPath();
+            for (let i = 0; i < n; i++) {
+                const v = Math.max(-1, Math.min(1, wave[i] ?? 0));
+                const x = padL + (i / Math.max(1, n - 1)) * ww;
+                const y = midY - v * (hh * 0.36);
+                if (i === 0)
+                    ctx.moveTo(x, y);
+                else
+                    ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    };
+    // Update HUD even if requestAnimationFrame gets throttled or stops.
+    window.setInterval(() => {
+        try {
+            renderHud();
+        }
+        catch {
+            // ignore
+        }
+    }, 250);
     const errMsg = (e) => {
         if (e instanceof Error)
             return e.message;
@@ -707,14 +1181,25 @@ async function main() {
             if (!audio) {
                 const mod = await import("./music/audioEngine");
                 audio = new mod.AudioEngine({ bpm: BPM_DEFAULT });
+                if (typeof mod?.AUDIO_ENGINE_VERSION === "string") {
+                    audSpan.title = `AudioEngine: ${mod.AUDIO_ENGINE_VERSION}`;
+                }
             }
-            audio.setMode(audioMode);
+            const a = audio;
+            if (!a)
+                throw new Error("AudioEngine not initialized");
+            {
+                const picks = ["rave", "modern", "melodic"];
+                audioTrack = picks[Math.floor(Math.random() * picks.length)] ?? "rave";
+            }
+            a.setTrack(audioTrack);
+            a.setMode(audioMode);
             try {
-                await audio.start();
+                await a.start();
             }
             catch (e) {
                 await new Promise((r) => setTimeout(r, 250));
-                await audio.start();
+                await a.start();
             }
             audSpan.textContent = "on";
         }
@@ -733,6 +1218,32 @@ async function main() {
         overlayBtn.disabled = false;
         startBtn.textContent = "Enter Performance";
         lastT = performance.now();
+        if (audioUpdateTimer !== null) {
+            try {
+                window.clearInterval(audioUpdateTimer);
+            }
+            catch {
+            }
+            audioUpdateTimer = null;
+        }
+        if (audioOn) {
+            audioUpdateTimer = window.setInterval(() => {
+                try {
+                    if (!running || !audioOn)
+                        return;
+                    const c = lastControlForAudio;
+                    if (!c)
+                        return;
+                    const aT0 = performance.now();
+                    audio?.update(c);
+                    const aT1 = performance.now();
+                    tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                }
+                catch {
+                    // ignore
+                }
+            }, 33);
+        }
         requestAnimationFrame(tick);
     };
     const stop = async () => {
@@ -742,6 +1253,14 @@ async function main() {
         nextBtn.disabled = true;
         safeBtn.disabled = true;
         overlayBtn.disabled = true;
+        if (audioUpdateTimer !== null) {
+            try {
+                window.clearInterval(audioUpdateTimer);
+            }
+            catch {
+            }
+            audioUpdateTimer = null;
+        }
         await audio?.stop();
         tracker.stop();
         midi.stop();
@@ -771,6 +1290,7 @@ async function main() {
     modeBtn.addEventListener("click", () => {
         audioMode = audioMode === "drone" ? "performance" : "drone";
         modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
+        updateGestureHint(audioMode);
         audio?.setMode(audioMode);
     });
     prevBtn.addEventListener("click", () => {
@@ -787,20 +1307,127 @@ async function main() {
     });
     safeBtn.addEventListener("click", () => {
         safeMode = !safeMode;
-        safeBtn.textContent = safeMode ? "SAFE: ON" : "SAFE: OFF";
+        safeBtn.textContent = safeMode ? "LOW: ON" : "LOW: OFF";
         visuals.setSafeMode(safeMode);
         tracker.setSafeMode(safeMode);
         overlay.setLowPower(safeMode);
         overlay.setMaxDpr(safeMode ? 1.0 : 1.25);
+        audio?.setSafeMode(safeMode);
     });
     overlayBtn.addEventListener("click", () => {
         overlayOn = !overlayOn;
         overlayBtn.textContent = overlayOn ? "OVR: ON" : "OVR: OFF";
         overlay.setEnabled(overlayOn);
+        tracker.setWantLandmarks(overlayOn);
     });
     window.addEventListener("keydown", (e) => {
         if (e.repeat)
             return;
+        if (e.key.toLowerCase() === "h") {
+            hudOn = !hudOn;
+        }
+        if (e.key.toLowerCase() === "c") {
+            camTrackOn = !camTrackOn;
+            if (!camTrackOn) {
+                try {
+                    tracker.stop();
+                }
+                catch {
+                }
+                try {
+                    video.srcObject = null;
+                }
+                catch {
+                }
+                try {
+                    video.pause();
+                }
+                catch {
+                }
+                try {
+                    videoWrap.style.display = "none";
+                }
+                catch {
+                }
+                camSpan.textContent = "off";
+                handsSpan.textContent = "0";
+            }
+            else {
+                try {
+                    videoWrap.style.display = "block";
+                }
+                catch {
+                }
+                camSpan.textContent = "starting";
+                void tracker
+                    .start(video)
+                    .then(() => {
+                    camSpan.textContent = "on";
+                })
+                    .catch((err) => {
+                    camTrackOn = false;
+                    camSpan.textContent = "error";
+                    camSpan.title = `Camera error: ${errMsg(err)}`;
+                });
+            }
+        }
+        if (e.key.toLowerCase() === "i") {
+            camInferOn = !camInferOn;
+            tracker.setInferEnabled(camInferOn);
+        }
+        if (e.key.toLowerCase() === "v") {
+            audioVizOn = !audioVizOn;
+        }
+        if (e.key.toLowerCase() === "g") {
+            gpuRenderOn = !gpuRenderOn;
+            visuals.setRenderEnabled(gpuRenderOn);
+        }
+        if (e.key.toLowerCase() === "a") {
+            if (!audio)
+                return;
+            audioOn = !audioOn;
+            if (!audioOn) {
+                if (audioUpdateTimer !== null) {
+                    try {
+                        window.clearInterval(audioUpdateTimer);
+                    }
+                    catch {
+                    }
+                    audioUpdateTimer = null;
+                }
+                void audio.stop();
+                audSpan.textContent = "off";
+            }
+            else {
+                audSpan.textContent = "starting";
+                audio.setTrack(audioTrack);
+                audio.setMode(audioMode);
+                audio.setSafeMode(safeMode);
+                void audio.start();
+                audSpan.textContent = "on";
+                if (audioUpdateTimer === null && running) {
+                    audioUpdateTimer = window.setInterval(() => {
+                        try {
+                            if (!running || !audioOn)
+                                return;
+                            const c = lastControlForAudio;
+                            if (!c)
+                                return;
+                            const aT0 = performance.now();
+                            audio?.update(c);
+                            const aT1 = performance.now();
+                            tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                        }
+                        catch {
+                            // ignore
+                        }
+                    }, 33);
+                }
+            }
+        }
+        if (e.key.toLowerCase() === "p") {
+            requestReload("manual");
+        }
         if (e.key === "ArrowLeft") {
             const s = visuals.nextScene(-1);
             sceneBadge.textContent = `Scene: ${s.name}`;

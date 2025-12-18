@@ -34,6 +34,9 @@ export class HandOverlay2D {
     lowPower = false;
     enabled = true;
     maxDpr = 1.25;
+    targetFps = 15;
+    minIntervalMs = 1000 / 15;
+    lastDrawAt = -Infinity;
     constructor(canvas) {
         this.canvas = canvas;
         const ctx = canvas.getContext("2d");
@@ -56,6 +59,10 @@ export class HandOverlay2D {
     setLowPower(on) {
         this.lowPower = on;
     }
+    setTargetFps(fps) {
+        this.targetFps = Math.max(1, fps);
+        this.minIntervalMs = 1000 / this.targetFps;
+    }
     resize() {
         this.dpr = Math.min(this.maxDpr, window.devicePixelRatio || 1);
         const w = Math.floor(window.innerWidth * this.dpr);
@@ -75,6 +82,10 @@ export class HandOverlay2D {
     draw(hands) {
         if (!this.enabled)
             return;
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (now - this.lastDrawAt < this.minIntervalMs)
+            return;
+        this.lastDrawAt = now;
         this.clear();
         for (const hand of hands) {
             if (!hand.landmarks || hand.landmarks.length < 21)
@@ -82,7 +93,7 @@ export class HandOverlay2D {
             const alpha = clamp01(0.35 + hand.score * 0.65);
             const hue = hand.label === "Left" ? 195 : hand.label === "Right" ? 275 : 220;
             const lineWidth = 2 + hand.pinch * 2.2;
-            const glow = this.lowPower ? 0 : 10 + hand.speed * 18;
+            const glow = 0;
             this.ctx.save();
             this.ctx.globalCompositeOperation = this.lowPower ? "source-over" : "lighter";
             this.ctx.lineCap = "round";
@@ -91,30 +102,40 @@ export class HandOverlay2D {
             this.ctx.shadowColor = `hsla(${hue}, 95%, 60%, ${alpha})`;
             this.ctx.strokeStyle = `hsla(${hue}, 95%, 65%, ${alpha})`;
             this.ctx.lineWidth = lineWidth;
+            // Batch connections into a single stroke.
+            this.ctx.beginPath();
             for (const [a, b] of CONNECTIONS) {
                 const pa = hand.landmarks[a];
                 const pb = hand.landmarks[b];
                 if (!pa || !pb)
                     continue;
-                this.line(pa, pb);
+                const ppa = this.toPx(pa);
+                const ppb = this.toPx(pb);
+                this.ctx.moveTo(ppa.x, ppa.y);
+                this.ctx.lineTo(ppb.x, ppb.y);
             }
+            this.ctx.stroke();
             const baseR = 2.2 + hand.speed * 2.6;
             const activeR = 4.0 + hand.pinch * 6.0;
+            // Batch points into a single fill.
+            this.ctx.fillStyle = `hsla(${hue}, 95%, 70%, ${alpha})`;
+            this.ctx.beginPath();
             for (let i = 0; i < 21; i++) {
                 const p = hand.landmarks[i];
                 if (!p)
                     continue;
                 let r = baseR;
-                let a = alpha;
                 if (i === 4 || i === 8) {
                     r = activeR;
-                    a = clamp01(alpha + hand.pinch * 0.35);
                 }
                 if (hand.fist) {
                     r *= 1.15;
                 }
-                this.point(p, r, hue, a);
+                const pp = this.toPx(p);
+                this.ctx.moveTo(pp.x + r, pp.y);
+                this.ctx.arc(pp.x, pp.y, r, 0, Math.PI * 2);
             }
+            this.ctx.fill();
             this.ctx.restore();
         }
     }

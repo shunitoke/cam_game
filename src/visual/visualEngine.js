@@ -31,6 +31,11 @@ export class VisualEngine {
     catAmount = 0;
     postTime = 0;
     safeMode = false;
+    renderEnabled = true;
+    renderScale = 1;
+    dpr = 1;
+    lastInternalW = 1;
+    lastInternalH = 1;
     scenes;
     sceneIndex = 0;
     constructor(canvas, opts) {
@@ -41,8 +46,11 @@ export class VisualEngine {
             alpha: false,
             powerPreference: "low-power"
         });
-        this.renderer.setPixelRatio(Math.min(1.25, window.devicePixelRatio || 1));
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        // Keep renderer pixel ratio at 1 and bake DPR + SAFE scaling into the internal size.
+        // This allows SAFE mode to reduce GPU workload while keeping the canvas CSS fullscreen.
+        this.renderer.setPixelRatio(1);
+        this.dpr = Math.min(1.25, window.devicePixelRatio || 1);
+        this.renderer.setSize(Math.floor(window.innerWidth * this.dpr), Math.floor(window.innerHeight * this.dpr), false);
         this.camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 40);
         this.camera.position.set(0, 0, 2.2);
         this.rt = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
@@ -65,7 +73,8 @@ export class VisualEngine {
                 uInvRes: { value: new THREE.Vector2(1 / Math.max(1, window.innerWidth), 1 / Math.max(1, window.innerHeight)) },
                 uCrt: { value: 0.85 },
                 uChromAb: { value: 0.55 },
-                uFxaa: { value: 1.0 }
+                uFxaa: { value: 1.0 },
+                uGain: { value: 1.18 }
             },
             vertexShader: `
         varying vec2 vUv;
@@ -85,6 +94,7 @@ export class VisualEngine {
         uniform float uCrt;
         uniform float uChromAb;
         uniform float uFxaa;
+        uniform float uGain;
 
         vec2 catMap(vec2 uv){
           // Arnold's Cat Map on [0,1) torus.
@@ -190,6 +200,9 @@ export class VisualEngine {
           // Slight bloom-ish lift.
           col += 0.015 * crt;
 
+          // Overall screen gain (TV brightness).
+          col *= max(0.0, uGain);
+
           // Clamp edges outside barrel.
           float inb = step(0.0, duv.x) * step(0.0, duv.y) * step(duv.x, 1.0) * step(duv.y, 1.0);
           col *= inb;
@@ -208,7 +221,10 @@ export class VisualEngine {
         const tunnel = new RaymarchTunnelScene();
         const rd = new ReactionDiffusionScene();
         const wave = new WaveLabScene();
-        const phys = new PhysicsScene();
+        const phys = new PhysicsScene({ mode: "cloth" });
+        const physRope = new PhysicsScene({ mode: "rope" });
+        const physJelly = new PhysicsScene({ mode: "jelly" });
+        const physChainmail = new PhysicsScene({ mode: "chainmail" });
         const quasi = new QuasicrystalsScene();
         const ascii = new AsciiScene(opts?.video);
         const bif = new BifurcationScene();
@@ -221,7 +237,31 @@ export class VisualEngine {
         const kalei = new KaleidoscopeScene();
         const metaballs = new MetaballsScene();
         // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
+        for (const sc of [
+            particles,
+            geo,
+            plasma,
+            warp,
+            cellular,
+            tunnel,
+            rd,
+            wave,
+            phys,
+            physRope,
+            physJelly,
+            physChainmail,
+            quasi,
+            ascii,
+            bif,
+            lloyd,
+            rrt,
+            arbor,
+            koch,
+            dla,
+            bosWarp,
+            kalei,
+            metaballs
+        ]) {
             if (typeof sc.setRenderer === "function") {
                 sc.setRenderer(this.renderer);
             }
@@ -239,6 +279,9 @@ export class VisualEngine {
             { def: { id: "bif", name: "Bifurcation" }, scene: bif },
             { def: { id: "wavelab", name: "WaveLab" }, scene: wave },
             { def: { id: "physics", name: "Physics" }, scene: phys },
+            { def: { id: "physicsRope", name: "Physics Rope" }, scene: physRope },
+            { def: { id: "physicsJelly", name: "Physics Jelly" }, scene: physJelly },
+            { def: { id: "physicsChainmail", name: "Physics Chainmail" }, scene: physChainmail },
             { def: { id: "lloyd", name: "Lloyd" }, scene: lloyd },
             { def: { id: "rrt", name: "RRT" }, scene: rrt },
             { def: { id: "arboretum", name: "Arboretum" }, scene: arbor },
@@ -265,6 +308,8 @@ export class VisualEngine {
         return this.current;
     }
     update(control) {
+        if (!this.renderEnabled)
+            return;
         const s = this.scenes[this.sceneIndex].scene;
         s.update(control);
         this.postTime += control.dt;
@@ -284,12 +329,20 @@ export class VisualEngine {
         this.postMat.uniforms.uTime.value = this.postTime;
         this.renderer.render(this.postScene, this.postCamera);
     }
+    setRenderEnabled(on) {
+        this.renderEnabled = on;
+    }
+    getRenderEnabled() {
+        return this.renderEnabled;
+    }
     setSafeMode(on) {
         this.safeMode = on;
+        this.renderScale = on ? 0.65 : 1;
         const s = this.scenes[this.sceneIndex].scene;
         if (typeof s.setSafeMode === "function") {
             s.setSafeMode(on);
         }
+        this.onResize();
     }
     reset() {
         this.scenes[this.sceneIndex].scene.reset();
@@ -307,9 +360,15 @@ export class VisualEngine {
         const h = window.innerHeight;
         this.camera.aspect = w / h;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(w, h);
-        this.rt.setSize(w, h);
-        this.postMat.uniforms.uInvRes.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+        this.dpr = Math.min(1.25, window.devicePixelRatio || 1);
+        const scale = this.renderScale;
+        const iw = Math.max(1, Math.floor(w * this.dpr * scale));
+        const ih = Math.max(1, Math.floor(h * this.dpr * scale));
+        this.lastInternalW = iw;
+        this.lastInternalH = ih;
+        this.renderer.setSize(iw, ih, false);
+        this.rt.setSize(iw, ih);
+        this.postMat.uniforms.uInvRes.value.set(1 / Math.max(1, iw), 1 / Math.max(1, ih));
         for (const s of this.scenes) {
             if (typeof s.scene.onResize === "function") {
                 s.scene.onResize(this.camera);
