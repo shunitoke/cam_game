@@ -1026,7 +1026,14 @@ async function main() {
     const trAny: any = tracker as any;
     const infPauseMs = camTrackOn && camInferOn ? (trAny.getInferPauseMs?.(now) ?? 0) : 0;
     const infLastMs = camTrackOn && camInferOn ? (trAny.getLastInferMs?.() ?? 0) : 0;
-    const infStr = !camInferOn ? "off" : infPauseMs > 0 ? `cool ${Math.round(infPauseMs)}ms` : `on ${Math.round(infLastMs)}ms`;
+    const infBackend = camTrackOn && camInferOn ? (trAny.getInferBackend?.() ?? "main") : "off";
+    const workerErr = camTrackOn && camInferOn ? (trAny.getWorkerError?.() ?? null) : null;
+    const infStr =
+      !camInferOn
+        ? "off"
+        : infPauseMs > 0
+          ? `cool ${Math.round(infPauseMs)}ms`
+          : `on ${infBackend} ${Math.round(infLastMs)}ms`;
 
     hudText.textContent =
       `FPS ${fpsEma.toFixed(1)}  dt ${lastDtMs.toFixed(1)}ms (raw ${lastRawDtMs.toFixed(1)})  long ${longFrames}` +
@@ -1035,6 +1042,7 @@ async function main() {
       `\nLT ${lt}  GC ${gc}  ${lostStr}` +
       `\nms tick ${tTickMs.toFixed(1)}  vis ${tVisualsMs.toFixed(1)}  aud ${tAudioMs.toFixed(1)}  viz ${tVizMs.toFixed(1)}  cam ${tTrackerMs.toFixed(1)}  midi ${tMidiMs.toFixed(1)}` +
       `\nlow ${safeMode ? "on" : "off"}  cam ${camTrackOn ? "on" : "off"}  inf ${infStr}  viz ${audioVizOn ? "on" : "off"}  gpu ${gpuRenderOn ? "on" : "off"}  aud ${audioOn ? "on" : "off"}` +
+      `${workerErr ? `\nworkerErr ${workerErr}` : ""}` +
       `\nerr ${lastErr ?? "-"}` +
       `\nrej ${lastRej ?? "-"}` +
       `\nkeys: H HUD  C cam  I inf  V viz  G gpu  A aud  P reload`;

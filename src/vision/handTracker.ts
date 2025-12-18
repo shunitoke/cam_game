@@ -42,6 +42,13 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
   private handLandmarker: HandLandmarker | null = null;
   private result: HandLandmarkerResult | null = null;
 
+  private workerResult: any | null = null;
+  private worker: Worker | null = null;
+  private useWorker = true;
+  private workerReady = false;
+  private workerInitInFlight = false;
+  private workerError: string | null = null;
+
   private vision: any | null = null;
   private readonly wasmUrl = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
   private readonly modelUrl =
@@ -81,6 +88,12 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
   private video: HTMLVideoElement | null = null;
   private videoTrack: MediaStreamTrack | null = null;
   private lastVideoTime = -1;
+
+  private useVideoFrameCallback = true;
+  private vfcActive = false;
+  private vfcInFlight = false;
+
+  private vfcLastSentMediaTime = -1;
 
   private targetFps = 15;
   private minIntervalMs = 1000 / 15;
@@ -128,6 +141,16 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     return this.lastInferMs;
   }
 
+  getInferBackend(): "worker" | "main" | "off" {
+    if (!this.inferEnabled) return "off";
+    if (this.useWorker && this.workerReady) return "worker";
+    return "main";
+  }
+
+  getWorkerError(): string | null {
+    return this.workerError;
+  }
+
   async start(video: HTMLVideoElement) {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -160,9 +183,33 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     this.currentNumHands = this.cfg.maxHands;
 
     this.setSafeMode(this.safeMode);
+
+    this.workerError = null;
+
+    await this.ensureWorker();
+
+    this.vfcActive = false;
+    this.vfcInFlight = false;
+    this.vfcLastSentMediaTime = -1;
+    this.startVideoFrameLoop();
   }
 
   stop() {
+    this.vfcActive = false;
+    this.vfcInFlight = false;
+    this.workerResult = null;
+    this.workerReady = false;
+    this.workerInitInFlight = false;
+    this.workerError = null;
+    try {
+      this.worker?.postMessage({ type: "stop" });
+    } catch {
+    }
+    try {
+      this.worker?.terminate();
+    } catch {
+    }
+    this.worker = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.videoTrack = null;
@@ -171,6 +218,173 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     this.handLandmarker = null;
     this.vision = null;
     this.restartInFlight = null;
+  }
+
+  private async ensureWorker() {
+    if (!this.useWorker) return;
+    if (this.worker && this.workerReady) return;
+    if (this.workerInitInFlight) return;
+    this.workerInitInFlight = true;
+
+    try {
+      if (!this.worker) {
+        // Use a true classic worker from /public. MediaPipe Tasks Vision relies on importScripts()
+        // internally, which is not allowed in module workers.
+        this.worker = new Worker("/handTrackerWorker.js");
+      }
+
+      if (!this.worker) {
+        throw new Error("worker ctor unavailable");
+      }
+
+      this.worker.onmessage = (ev: MessageEvent<any>) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== "object") return;
+        if (msg.type === "ready") {
+          this.workerReady = true;
+          this.workerError = null;
+          return;
+        }
+        if (msg.type === "result") {
+          this.workerResult = msg.result ?? null;
+          if (typeof msg.inferMs === "number") {
+            this.lastInferMs = msg.inferMs;
+          }
+          return;
+        }
+        if (msg.type === "error") {
+          // Disable worker path after a hard failure and fall back to main-thread inference.
+          this.workerError = typeof msg.message === "string" ? msg.message : "worker error";
+          this.workerReady = false;
+          this.useWorker = false;
+          try {
+            this.worker?.terminate();
+          } catch {
+          }
+          this.worker = null;
+          return;
+        }
+      };
+
+      this.workerReady = false;
+      this.workerResult = null;
+      this.workerError = null;
+
+      // Worker initializes its own FilesetResolver + HandLandmarker.
+      this.worker.postMessage({
+        type: "init",
+        wasmUrl: this.wasmUrl,
+        modelUrl: this.modelUrl,
+        maxHands: this.cfg.maxHands
+      });
+
+      // Give it a moment; it will flip workerReady asynchronously.
+      await new Promise<void>((r) => setTimeout(r, 0));
+    } catch {
+      this.useWorker = false;
+      this.workerReady = false;
+      this.workerError = "worker init failed";
+      try {
+        this.worker?.terminate();
+      } catch {
+      }
+      this.worker = null;
+    } finally {
+      this.workerInitInFlight = false;
+    }
+  }
+
+  private startVideoFrameLoop() {
+    if (!this.useVideoFrameCallback) return;
+    const videoEl: any = this.video as any;
+    if (!videoEl || typeof videoEl.requestVideoFrameCallback !== "function") return;
+    if (this.vfcActive) return;
+
+    this.vfcActive = true;
+
+    const loop = async (_now: number, meta: any) => {
+      if (!this.vfcActive) return;
+      // Schedule next callback first to keep the loop alive even if inference throws.
+      try {
+        (videoEl as any).requestVideoFrameCallback(loop);
+      } catch {
+        this.vfcActive = false;
+        return;
+      }
+
+      // Avoid overlapping work if callbacks come in faster than we can process.
+      if (this.vfcInFlight) return;
+      this.vfcInFlight = true;
+
+      try {
+        const v = this.video;
+        if (!v) return;
+
+        const nowMs = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (nowMs < this.inferPauseUntilMs) return;
+        if (!this.inferEnabled) {
+          this.result = null;
+          this.workerResult = null;
+          this.prevCenters.clear();
+          return;
+        }
+
+        const mediaTime = typeof meta?.mediaTime === "number" ? meta.mediaTime : v.currentTime;
+
+        // Fixed FPS gate.
+        if (nowMs - this.lastInferT < this.minIntervalMs) return;
+
+        // Only infer when the video frame advanced.
+        if (mediaTime === this.lastVideoTime) return;
+
+        this.lastVideoTime = mediaTime;
+        this.lastInferT = nowMs;
+
+        // Worker path: transfer an ImageBitmap instead of running inference on main thread.
+        if (this.useWorker && this.worker && this.workerReady && typeof (globalThis as any).createImageBitmap === "function") {
+          // Avoid sending duplicate frames.
+          if (mediaTime !== this.vfcLastSentMediaTime) {
+            this.vfcLastSentMediaTime = mediaTime;
+            let bmp: ImageBitmap | null = null;
+            try {
+              bmp = await (globalThis as any).createImageBitmap(v);
+            } catch {
+              bmp = null;
+            }
+            if (bmp) {
+              try {
+                this.worker.postMessage({ type: "infer", frame: bmp, timestampMs: nowMs }, [bmp as any]);
+              } catch {
+                try {
+                  bmp.close();
+                } catch {
+                }
+              }
+            }
+          }
+          return;
+        }
+
+        // Fallback: in-thread inference.
+        const lm = this.handLandmarker;
+        if (!lm) return;
+        const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+        this.result = (lm as any).detectForVideo(v, nowMs) as HandLandmarkerResult;
+        const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
+        this.lastInferMs = Math.max(0, t1 - t0);
+      } catch {
+        this.result = null;
+        this.workerResult = null;
+      } finally {
+        this.vfcInFlight = false;
+      }
+    };
+
+    try {
+      (videoEl as any).requestVideoFrameCallback(loop);
+    } catch {
+      this.vfcActive = false;
+    }
   }
 
   async restartLandmarker() {
@@ -249,6 +463,15 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
 
     if (!lm || !videoEl) {
       return { count: 0, hands: [] };
+    }
+
+    // If inference is being driven by video frame callbacks, just consume cached results.
+    if (this.useVideoFrameCallback && this.vfcActive) {
+      // Prefer worker output when available.
+      if (this.useWorker && this.workerReady && this.workerResult) {
+        return this.workerResultToFrame(this.workerResult, dt);
+      }
+      return this.resultToFrame(this.result, dt);
     }
 
     // If we haven't produced a fresh inference for a while, clear stale output so hands
@@ -346,6 +569,93 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
           const o = buf[j]!;
           o.x = this.cfg.mirrorX ? 1 - p.x : p.x;
           o.y = p.y;
+        }
+        landmarks = buf;
+      } else {
+        landmarks = undefined;
+      }
+
+      const prev = this.prevCenters.get(key);
+      const speed = prev ? clamp01(dist(prev, center) / Math.max(1e-6, dt) / 1.3) : 0;
+      this.prevCenters.set(key, center);
+
+      hands.push({
+        label,
+        score,
+        landmarks,
+        center,
+        wrist,
+        pinch,
+        open,
+        fist,
+        speed
+      });
+    }
+
+    return { count: hands.length, hands };
+  }
+
+  private workerResultToFrame(result: any | null, dt: number): HandsFrame {
+    const landmarksAll = result?.landmarks as any;
+    if (!Array.isArray(landmarksAll) || landmarksAll.length === 0) return { count: 0, hands: [] };
+
+    const hands: HandPose[] = [];
+
+    for (let i = 0; i < landmarksAll.length; i++) {
+      const lm = landmarksAll[i] as any;
+      if (!Array.isArray(lm) || lm.length < 21) continue;
+
+      const { label, score } = handedLabelOf(result as any, i);
+      const key = `${label}:${i}`;
+
+      const mx = (idx: number) => {
+        const p = lm[idx];
+        const x = typeof p?.x === "number" ? p.x : 0;
+        return this.cfg.mirrorX ? 1 - x : x;
+      };
+      const my = (idx: number) => {
+        const p = lm[idx];
+        return typeof p?.y === "number" ? p.y : 0;
+      };
+
+      const wrist = { x: mx(0), y: my(0) };
+      const center = avg([
+        { x: mx(0), y: my(0) },
+        { x: mx(5), y: my(5) },
+        { x: mx(9), y: my(9) },
+        { x: mx(13), y: my(13) },
+        { x: mx(17), y: my(17) }
+      ]);
+
+      const palmSize = dist(wrist, { x: mx(9), y: my(9) });
+      const pinchDist = dist({ x: mx(4), y: my(4) }, { x: mx(8), y: my(8) });
+      const pinch = clamp01((0.20 - pinchDist) / 0.13);
+
+      const tipAvg =
+        (dist({ x: mx(8), y: my(8) }, wrist) +
+          dist({ x: mx(12), y: my(12) }, wrist) +
+          dist({ x: mx(16), y: my(16) }, wrist) +
+          dist({ x: mx(20), y: my(20) }, wrist)) /
+        4;
+
+      const open = tipAvg > palmSize * 1.75 && pinch < 0.75;
+      const fist = tipAvg < palmSize * 1.18 && pinch < 0.45;
+
+      let landmarks: Vec2[] | undefined;
+      if (!this.safeMode && this.wantLandmarks) {
+        let buf = this.landmarkBuf.get(key);
+        if (!buf || buf.length !== 21) {
+          buf = new Array(21);
+          for (let j = 0; j < 21; j++) buf[j] = { x: 0, y: 0 };
+          this.landmarkBuf.set(key, buf);
+        }
+        for (let j = 0; j < 21; j++) {
+          const p = lm[j];
+          const o = buf[j]!;
+          const x = typeof p?.x === "number" ? p.x : 0;
+          const y = typeof p?.y === "number" ? p.y : 0;
+          o.x = this.cfg.mirrorX ? 1 - x : x;
+          o.y = y;
         }
         landmarks = buf;
       } else {
