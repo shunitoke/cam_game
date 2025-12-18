@@ -82,8 +82,8 @@ async function main() {
   nextBtn.disabled = true;
 
   const overlayBtn = el("button");
-  overlayBtn.textContent = "OVR: ON";
-  overlayBtn.title = "Hand Overlay";
+  overlayBtn.textContent = "HANDS: ON";
+  overlayBtn.title = "Hand overlay";
   overlayBtn.disabled = true;
   let overlayOn = true;
 
@@ -1385,7 +1385,7 @@ async function main() {
 
   overlayBtn.addEventListener("click", () => {
     overlayOn = !overlayOn;
-    overlayBtn.textContent = overlayOn ? "OVR: ON" : "OVR: OFF";
+    overlayBtn.textContent = overlayOn ? "HANDS: ON" : "HANDS: OFF";
     overlay.setEnabled(overlayOn);
     tracker.setWantLandmarks(overlayOn);
   });
