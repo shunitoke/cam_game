@@ -234,7 +234,7 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
     const lm: any = this.handLandmarker as any;
     if (lm && typeof lm.setOptions === "function") {
       try {
-        const desired = on ? 1 : Math.max(1, this.currentNumHands || this.cfg.maxHands);
+        const desired = Math.max(1, this.cfg.maxHands);
         void lm.setOptions({ numHands: desired });
         this.currentNumHands = desired;
       } catch {
@@ -302,14 +302,6 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
       if (isSpike && nowMs - this.lastSpikeAtMs > spikeCooldownMs) {
         this.lastSpikeAtMs = nowMs;
         this.inferPauseUntilMs = nowMs + (this.safeMode ? 650 : 450);
-        const canSet = typeof (lm as any).setOptions === "function";
-        if (canSet && this.currentNumHands > 1) {
-          try {
-            void (lm as any).setOptions({ numHands: 1 });
-            this.currentNumHands = 1;
-          } catch {
-          }
-        }
       }
 
       this.inferMsEma = this.inferMsEma
@@ -334,24 +326,21 @@ function handedLabelOf(result: any, i: number): { label: HandLabel; score: numbe
           this.overBudgetMs = Math.max(0, this.overBudgetMs - dMs);
         }
 
-        const canSet = typeof (lm as any).setOptions === "function";
-        if (canSet && this.currentNumHands > 1 && this.overBudgetMs > 900) {
-          try {
-            void (lm as any).setOptions({ numHands: 1 });
-            this.currentNumHands = 1;
-            this.overBudgetMs = 0;
-            this.underBudgetMs = 0;
-          } catch {
-          }
+        // Keep both hands enabled; under sustained load, fall back by increasing inference interval
+        // and applying a small cooldown instead of changing MediaPipe numHands.
+        if (this.overBudgetMs > 900) {
+          this.inferPauseUntilMs = Math.max(this.inferPauseUntilMs, nowMs + (this.safeMode ? 220 : 160));
+          this.dynamicMinIntervalMs = Math.min(
+            maxIntervalMs,
+            Math.max(this.dynamicMinIntervalMs, this.minIntervalMs * (this.safeMode ? 1.8 : 1.5))
+          );
+          this.overBudgetMs = 0;
+          this.underBudgetMs = 0;
         }
-        if (canSet && this.currentNumHands === 1 && !this.safeMode && this.underBudgetMs > 3500) {
-          try {
-            void (lm as any).setOptions({ numHands: this.cfg.maxHands });
-            this.currentNumHands = this.cfg.maxHands;
-            this.overBudgetMs = 0;
-            this.underBudgetMs = 0;
-          } catch {
-          }
+        if (!this.safeMode && this.underBudgetMs > 3500) {
+          this.dynamicMinIntervalMs = Math.max(this.minIntervalMs, Math.min(this.dynamicMinIntervalMs, this.minIntervalMs * 1.05));
+          this.overBudgetMs = 0;
+          this.underBudgetMs = 0;
         }
       }
 
