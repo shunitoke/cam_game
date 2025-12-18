@@ -1360,7 +1360,9 @@ async function main() {
       audSpan.textContent = "on";
     } catch (e) {
       audSpan.textContent = "error";
-      audSpan.title = `Audio error: ${errMsg(e)}`;
+      const extra =
+        typeof (audio as any)?.getLastError === "function" ? String((audio as any).getLastError() ?? "") : "";
+      audSpan.title = `Audio error: ${errMsg(e)}${extra ? `\nEngine: ${extra}` : ""}`;
       startBtn.disabled = false;
       startBtn.textContent = "Enter Performance";
       return;

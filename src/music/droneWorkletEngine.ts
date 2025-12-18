@@ -589,7 +589,7 @@ export class DroneWorkletEngine {
     this.ctx = ctx;
 
     // Worklet module: Vite will serve/compile this URL.
-    await ctx.audioWorklet.addModule(new URL("./worklets/droneProcessor.ts", import.meta.url));
+    await ctx.audioWorklet.addModule(new URL("./worklets/droneProcessor.js", import.meta.url));
 
     const node = new AudioWorkletNode(ctx, "drone-processor", {
       numberOfInputs: 0,
