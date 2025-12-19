@@ -1122,6 +1122,7 @@ async function main() {
           hit("hat", 38, 0);
           hit("clap", 39, 0);
           hit("rim", 40, 0);
+          hit("bass", 41, 0);
           hit("openhat", 47, 0);
           hit("pad", 42, 0);
           hit("pad", 44, 0);

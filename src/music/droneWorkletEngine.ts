@@ -28,6 +28,14 @@ function makeDriveCurve(amount: number) {
   return curve;
 }
 
+type HarmonyClip = {
+  bars: number;
+  padLow: number;
+  padHigh: number;
+  lead: number;
+  source: string;
+};
+
 export class DroneWorkletEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
@@ -172,6 +180,24 @@ export class DroneWorkletEngine {
   private padAmp = 0;
   private padNextBar = 0;
   private padBaseHz = 110;
+  private padChordLowHz = midiToHz(49);
+  private padChordHighHz = midiToHz(56);
+
+  private bassBus: GainNode | null = null;
+  private bassFilter: BiquadFilterNode | null = null;
+  private bassDrive: WaveShaperNode | null = null;
+  private bassSend: GainNode | null = null;
+  private bassSendConnected = false;
+  private bassOscs: Array<{ osc: OscillatorNode; gain: GainNode; ratio: number; level: number }> = [];
+  private bassRootHz = midiToHz(37);
+  private bassAltHz = midiToHz(40);
+  private bassLastFreq = 0;
+  private readonly bassPattern = [
+    1.0, 0, 0, 0,
+    0.65, 0, 0.35, 0,
+    0.9, 0, 0.45, 0,
+    0.7, 0, 0.4, 0
+  ];
 
   private leadDrive: WaveShaperNode | null = null;
   private leadFilter: BiquadFilterNode | null = null;
@@ -191,19 +217,30 @@ export class DroneWorkletEngine {
   private sceneHatBoost = 1;
   private scenePercBoost = 1;
   private sceneLeadBoost = 1;
-  private scenePitchMultiplier = 1.0;
   private sceneFxBoost = 0;
   private scenePadBrightBoost = 0;
-  private readonly harmonyChords: Array<{ padLow: number; padHigh: number; lead: number }> = [
-    // Scene 0: D# minor (D#3 – A#3, lead F#4)
-    { padLow: 51, padHigh: 58, lead: 66 },
-    // Scene 1: G# minor (G#3 – D#4, lead C#5)
-    { padLow: 56, padHigh: 63, lead: 73 },
-    // Scene 2: C# major (C#3 – G#3, lead E4)
-    { padLow: 49, padHigh: 56, lead: 64 },
-    // Scene 3: B major sus (B2 – F#3, lead D#4)
-    { padLow: 47, padHigh: 54, lead: 63 }
+  private readonly harmonyProgression: HarmonyClip[] = [
+    // Locrian pack – Progression 2 (moody tension)
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_I°" }, // I°
+    { bars: 4, padLow: 59, padHigh: 65, lead: 71, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_vii°" }, // vii°
+    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_iii" }, // iii
+    { bars: 4, padLow: 57, padHigh: 64, lead: 69, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_vi" }, // vi
+    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_ii" }, // ii
+    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_ii_repeat" }, // ii
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_I°_return" }, // I°
+    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_iii_return" }, // iii
+    // Locrian pack – Progression 13 (darker lift)
+    { bars: 4, padLow: 54, padHigh: 61, lead: 66, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_IV" }, // IV
+    { bars: 4, padLow: 57, padHigh: 64, lead: 69, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_VI" }, // vi
+    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_II" }, // ii
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_I°" }, // I°
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_I°_hold" }, // I° hold
+    { bars: 4, padLow: 55, padHigh: 62, lead: 67, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_V" }, // V
+    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_III" }, // iii
+    { bars: 4, padLow: 59, padHigh: 65, lead: 71, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_vii°" } // vii°
   ];
+  private harmonyIndex = 0;
+  private harmonyBarStart = 0;
   private readonly macroPadLiftDurationMs = 8000;
   private readonly macroPercBoostDurationMs = 6000;
   private readonly macroFxBlastDurationMs = 5500;
@@ -223,41 +260,57 @@ export class DroneWorkletEngine {
     this.breakdownSpanBars = 4;
     this.breakdownLevel = 0;
     this.applyFlowScene(0);
+    this.harmonyIndex = 0;
+    this.harmonyBarStart = 0;
+    this.applyHarmonyState(this.harmonyIndex);
   }
   private applyFlowScene(scene: 0 | 1 | 2 | 3) {
     this.flowScene = scene;
-    const harmony = this.harmonyChords[scene] ?? this.harmonyChords[0]!;
-    this.padBaseHz = midiToHz(harmony.padLow);
-    this.leadBaseHz = midiToHz(harmony.lead);
     if (scene === 0) {
       this.sceneHatBoost = 0.5;
       this.scenePercBoost = 0.3;
       this.sceneLeadBoost = 0.25;
       this.scenePadBrightBoost = -0.1;
       this.sceneFxBoost = 0.1;
-      this.scenePitchMultiplier = 1.0;
     } else if (scene === 1) {
       this.sceneHatBoost = 1;
       this.scenePercBoost = 0.8;
       this.sceneLeadBoost = 0.6;
       this.scenePadBrightBoost = 0;
       this.sceneFxBoost = 0.2;
-      this.scenePitchMultiplier = 0.75;
     } else if (scene === 2) {
       this.sceneHatBoost = 1.3;
       this.scenePercBoost = 1.1;
       this.sceneLeadBoost = 1.2;
       this.scenePadBrightBoost = 0.2;
       this.sceneFxBoost = 0.4;
-      this.scenePitchMultiplier = 0.5;
     } else {
       this.sceneHatBoost = 0.9;
       this.scenePercBoost = 0.7;
       this.sceneLeadBoost = 1.0;
       this.scenePadBrightBoost = 0.3;
       this.sceneFxBoost = 0.65;
-      this.scenePitchMultiplier = 0.67;
     }
+  }
+
+  private applyHarmonyState(index: number) {
+    const chord = this.harmonyProgression[index] ?? this.harmonyProgression[0]!;
+    this.padChordLowHz = midiToHz(chord.padLow);
+    this.padChordHighHz = midiToHz(chord.padHigh);
+    this.padBaseHz = this.padChordLowHz;
+    this.leadBaseHz = midiToHz(chord.lead);
+    this.bassRootHz = midiToHz(chord.padLow - 12);
+    this.bassAltHz = midiToHz(chord.padHigh - 12);
+  }
+
+  private updateHarmonyTimeline(bar: number) {
+    const chord = this.harmonyProgression[this.harmonyIndex];
+    if (!chord) return;
+    const nextChange = this.harmonyBarStart + chord.bars;
+    if (bar < nextChange) return;
+    this.harmonyIndex = (this.harmonyIndex + 1) % this.harmonyProgression.length;
+    this.harmonyBarStart = nextChange;
+    this.applyHarmonyState(this.harmonyIndex);
   }
 
   private updateArrangementStageProgress() {
@@ -739,6 +792,138 @@ export class DroneWorkletEngine {
     // (single guitar only)
   }
 
+  private ensureBassSynth() {
+    if (!this.ctx || !this.master) return;
+
+    if (!this.bassBus) {
+      this.bassBus = this.ctx.createGain();
+      this.bassBus.gain.value = 0.0;
+      this.bassFilter = this.ctx.createBiquadFilter();
+      this.bassFilter.type = "lowpass";
+      this.bassFilter.frequency.value = 320;
+      this.bassFilter.Q.value = 0.9;
+      this.bassDrive = this.ctx.createWaveShaper();
+      this.bassDrive.curve = makeDriveCurve(0.32);
+      this.bassDrive.oversample = "2x";
+      this.bassBus.connect(this.bassFilter);
+      this.bassFilter.connect(this.bassDrive);
+      this.bassDrive.connect(this.master);
+    }
+
+    if (this.bassDrive && this.rumbleSend && !this.bassSend) {
+      this.bassSend = this.ctx.createGain();
+      this.bassSend.gain.value = 0.0;
+      this.bassDrive.connect(this.bassSend);
+      this.bassSend.connect(this.rumbleSend);
+      this.bassSendConnected = true;
+    } else if (this.bassSend && this.rumbleSend && !this.bassSendConnected) {
+      this.bassSend.connect(this.rumbleSend);
+      this.bassSendConnected = true;
+    }
+
+    if (this.bassOscs.length === 0 && this.bassBus) {
+      const voices: Array<{ ratio: number; level: number }> = [
+        { ratio: 1, level: 0.35 },
+        { ratio: 0.5, level: 0.12 }
+      ];
+      for (const voice of voices) {
+        const osc = this.ctx.createOscillator();
+        osc.type = "sawtooth";
+        osc.frequency.value = Math.max(20, this.bassRootHz * voice.ratio);
+        const gain = this.ctx.createGain();
+        gain.gain.value = voice.level;
+        osc.connect(gain);
+        gain.connect(this.bassBus);
+        osc.start();
+        this.bassOscs.push({ osc, gain, ratio: voice.ratio, level: voice.level });
+      }
+    }
+  }
+
+  private disposeBassSynth() {
+    for (const voice of this.bassOscs) {
+      try {
+        voice.osc.stop();
+      } catch {
+      }
+      try {
+        voice.osc.disconnect();
+      } catch {
+      }
+      try {
+        voice.gain.disconnect();
+      } catch {
+      }
+    }
+    this.bassOscs = [];
+    this.bassSendConnected = false;
+    try {
+      this.bassSend?.disconnect();
+    } catch {
+    }
+    try {
+      this.bassDrive?.disconnect();
+    } catch {
+    }
+    try {
+      this.bassFilter?.disconnect();
+    } catch {
+    }
+    try {
+      this.bassBus?.disconnect();
+    } catch {
+    }
+    this.bassSend = null;
+    this.bassDrive = null;
+    this.bassFilter = null;
+    this.bassBus = null;
+  }
+
+  private triggerBassNote(time: number, weight: number, step: number, section: number, dens: number) {
+    if (!this.ctx) return;
+    this.ensureBassSynth();
+    if (!this.bassOscs.length || !this.bassBus) return;
+
+    const useAlt = step === 6 || step === 14 || (section >= 2 && (step & 4) === 4);
+    const baseHz = useAlt ? this.bassAltHz : this.bassRootHz;
+    for (const voice of this.bassOscs) {
+      const target = Math.max(20, baseHz * voice.ratio);
+      try {
+        voice.osc.frequency.setTargetAtTime(target, time, 0.02);
+      } catch {
+        voice.osc.frequency.value = target;
+      }
+      voice.gain.gain.value = voice.level;
+    }
+
+    const sectionLift = this.stageMix(2, 4);
+    const accent = clamp(weight * (0.35 + 0.65 * sectionLift) * (0.6 + dens * 0.4), 0, 1);
+    const peak = accent * 0.32;
+    const attack = 0.01;
+    const decay = this.breakdownActive ? 0.22 : 0.32;
+
+    try {
+      this.bassBus.gain.cancelScheduledValues(time);
+      this.bassBus.gain.setValueAtTime(Math.max(1e-4, this.bassBus.gain.value), time);
+      this.bassBus.gain.linearRampToValueAtTime(peak, time + attack);
+      this.bassBus.gain.exponentialRampToValueAtTime(0.0008, time + decay);
+    } catch {
+      this.bassBus.gain.value = peak;
+    }
+
+    if (this.bassSend) {
+      const sendPeak = peak * 0.4;
+      try {
+        this.bassSend.gain.cancelScheduledValues(time);
+        this.bassSend.gain.setValueAtTime(0, time);
+        this.bassSend.gain.linearRampToValueAtTime(sendPeak, time + 0.03);
+        this.bassSend.gain.exponentialRampToValueAtTime(0.001, time + decay + 0.12);
+      } catch {
+        this.bassSend.gain.value = sendPeak;
+      }
+    }
+  }
+
   private ensureRaveScheduler() {
     if (!this.ctx) return;
     if (!this.drumGain || !this.drumLP || !this.drumHP) return;
@@ -801,6 +986,7 @@ export class DroneWorkletEngine {
           this.raveBar++;
           this.raveTotalBars++;
           this.updateArrangementStageProgress();
+          this.updateHarmonyTimeline(this.raveTotalBars);
         }
         this.raveNextStepT += secPerStep;
       }
@@ -1066,6 +1252,16 @@ export class DroneWorkletEngine {
       this.markSample("rim", v);
       this.fireSample(time, this.sampleRim, v, 1.0);
     }
+
+    const bassWeight = this.bassPattern[step] ?? 0;
+    if (bassWeight > 0 && !inBreak && this.raveTotalBars >= 24) {
+      const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+      const breakdownScale = this.breakdownActive ? 0.45 : 1;
+      const energy = Math.max(kickMix, 0.28);
+      const weight = bassWeight * breakdownScale * energy;
+      this.triggerBassNote(time, weight, step, section, dens);
+      this.markSample("bass", Math.min(1, weight * 0.5));
+    }
   }
 
   async start() {
@@ -1226,6 +1422,7 @@ export class DroneWorkletEngine {
     // feedback
     this.rumbleOut.connect(this.rumbleFb);
     this.rumbleFb.connect(this.rumbleDelay);
+    this.ensureBassSynth();
 
     // Ensure audio starts immediately after user gesture.
     if (ctx.state === "suspended") {
@@ -1465,51 +1662,32 @@ export class DroneWorkletEngine {
     if (this.mode === "performance") {
       const midiPadOn = this.midiPadNote != null;
       const midiLeadOn = this.midiLeadNote != null;
-      const scenePitch = this.scenePitchMultiplier;
 
       if (midiPadOn) {
         // map note 42/44 to pad
         const n = this.midiPadNote!;
         this.padGain = 0.55;
         this.padGate = 1;
-        this.padFreq = midiToHz(n);
+        const padHz = n === 44 ? this.padChordHighHz : this.padChordLowHz;
+        this.padFreq = padHz;
         this.padBright = 0.65;
         this.padDetune = 0.012;
       } else {
-        const padBrightBase = clamp(control.rightY + this.scenePadBrightBoost, 0, 1);
-        const padBright = clamp(padBrightBase + this.macroPadLiftLevel * 0.25, 0, 1);
-        const padLevelBase = clamp((0.18 + control.build * 0.35) * synthStage, 0, 0.65);
-        const padLevel = Math.min(0.9, padLevelBase * (1 + this.macroPadLiftLevel * 0.7));
-        const padGate = 1;
-        const padFreq = baseHz * scenePitch * (1.2 + this.macroPadLiftLevel * 0.3);
-        const padDetune = clamp(0.004 + control.leftPinch * 0.012, 0, 0.04);
-        this.padGain = padLevel;
-        this.padGate = padGate;
-        this.padFreq = padFreq;
-        this.padBright = padBright;
-        this.padDetune = padDetune;
+        // No keyboard pad note: keep pad silent
+        this.padGain = 0;
+        this.padGate = 0;
       }
 
       if (midiLeadOn) {
-        const n = this.midiLeadNote!;
         this.leadGain = 0.5;
-        this.leadFreq = midiToHz(n + 12); // lift an octave for lead
+        this.leadFreq = this.leadBaseHz;
         this.leadBright = 0.70;
         this.leadProb = 1;
       } else {
-        const leadLevelBase = clamp((0.12 + control.build * 0.28) * synthStage * this.sceneLeadBoost, 0, 0.6);
-        const leadLevel = clamp(leadLevelBase * (1 + this.macroPadLiftLevel * 0.35), 0, 0.65);
-        const leadFreq = this.leadBaseHz * scenePitch;
-        const leadBright = clamp(control.rightY, 0, 1);
-        const leadProb = clamp(
-          (0.08 + control.build * 0.28 + this.rand01() * 0.04) * (1 + this.macroPadLiftLevel * 0.4),
-          0,
-          0.85
-        );
-        this.leadGain = leadLevel;
-        this.leadFreq = leadFreq;
-        this.leadBright = leadBright;
-        this.leadProb = leadProb;
+        // No keyboard lead note: disable auto lead hits
+        this.leadGain = 0;
+        this.leadProb = 0;
+        this.leadBright = 0.2;
       }
     } else {
       // In drone mode, keep pad/lead quiet.
@@ -1957,6 +2135,10 @@ export class DroneWorkletEngine {
         if (e.note === 40 && this.sampleRim) {
           this.markSample("rim", 0.18 * vel);
           this.fireSample(t, this.sampleRim, 0.18 * vel, 1.0);
+        }
+        if (e.note === 41) {
+          // Bass key (HUD highlight only – synth bass is procedural)
+          this.markSample("bass", 0.35 * vel);
         }
 
         // Optional: open hat / crash-ish on FX key
