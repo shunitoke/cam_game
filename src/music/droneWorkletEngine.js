@@ -226,6 +226,18 @@ export class DroneWorkletEngine {
     lastRightPinch = 0;
     lastControlHandsCount = 0;
     lastParamsSentAt = 0;
+    lastDrumLpFreq = 0;
+    lastDrumGain = 0;
+    lastFxCut = 0;
+    lastFxQ = 0;
+    lastFxDelayTime = 0;
+    lastFxDelayFb = 0;
+    lastFxDelayMix = 0;
+    lastRumbleSend = 0;
+    lastRumbleFb = 0;
+    lastRumbleDelay = 0;
+    lastRumbleLp = 0;
+    lastRumbleHp = 0;
     idleAmt = 0;
     lastDroneRate = 1;
     lastDroneRateA = 1;
@@ -1017,7 +1029,7 @@ export class DroneWorkletEngine {
         this.droneGtrAComp = null;
         this.started = false;
     }
-    update(control) {
+    updateFromControl(control) {
         if (!this.started)
             return;
         if (!this.node)
@@ -1059,19 +1071,20 @@ export class DroneWorkletEngine {
         const delayFb = clamp(0.18 + control.build * 0.55, 0, 0.86);
         const delayMixRaw = clamp(0.03 + control.rightPinch * 0.22, 0, 0.35);
         const delayMix = this.mode === "drone" ? 0.08 + 0.12 * clamp(control.build, 0, 1) : delayMixRaw;
+        const rPinchRaw = clamp(control.rightPinch, 0, 1);
+        const rPinch = rPinchRaw <= 0.30 ? 0 : clamp((rPinchRaw - 0.30) / 0.70, 0, 1);
         // Rhythm (worklet stepper): slow pulse you can "wake up" with build.
         const bpm = expRange01(control.leftX, 44, 92);
         const pulseAmtRaw = clamp(0.04 + control.build * 0.55, 0, 0.85);
         const pulseAmt = this.mode === "drone" ? 0 : pulseAmtRaw;
         const pulseDecay = expRange01(1 - control.leftY, 0.04, 0.26);
-        const tickAmtRaw = clamp(0.00 + control.rightPinch * 0.55, 0, 0.9);
+        const tickAmtRaw = 0;
         const tickAmt = this.mode === "drone" ? 0 : tickAmtRaw;
         const tickDecay = expRange01(1 - control.rightY, 0.01, 0.11);
         const tickTone = expRange01(control.rightY, 400, 5200);
         // Guitar (right hand): pinch = pluck trigger, X = pitch, Y = brightness
         const guitarFreq = expRange01(control.rightX, 82, 392);
         const guitarBright = clamp(control.rightY, 0, 1);
-        const rPinch = clamp(control.rightPinch, 0, 1);
         const pluckRaw = rPinch > 0.65 && this.lastRightPinch <= 0.65 ? 1 : 0;
         const pluck = this.mode === "drone" ? 0 : pluckRaw;
         this.lastRightPinch = rPinch;
@@ -1080,10 +1093,30 @@ export class DroneWorkletEngine {
         if (this.mode === "performance") {
             this.raveBpm = expRange01(control.leftX, 126, 152);
             if (this.drumLP) {
-                this.drumLP.frequency.value = expRange01(control.rightY, 1400, 14000);
+                const tA = this.ctx?.currentTime ?? 0;
+                const target = expRange01(control.rightY, 1400, 14000);
+                if (Math.abs(target - this.lastDrumLpFreq) > 8) {
+                    this.lastDrumLpFreq = target;
+                    try {
+                        this.drumLP.frequency.setTargetAtTime(target, tA, 0.035);
+                    }
+                    catch {
+                        this.drumLP.frequency.value = target;
+                    }
+                }
             }
             if (this.drumGain) {
-                this.drumGain.gain.value = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
+                const tA = this.ctx?.currentTime ?? 0;
+                const target = 0.78 + 0.22 * clamp(1 - control.build, 0, 1);
+                if (Math.abs(target - this.lastDrumGain) > 0.004) {
+                    this.lastDrumGain = target;
+                    try {
+                        this.drumGain.gain.setTargetAtTime(target, tA, 0.05);
+                    }
+                    catch {
+                        this.drumGain.gain.value = target;
+                    }
+                }
             }
             const tNow = this.ctx?.currentTime ?? 0;
             const morph = clamp((tNow - this.raveSectionChangeT) / 4.0, 0, 1);
@@ -1101,34 +1134,138 @@ export class DroneWorkletEngine {
             const baseRumble = (secRumble[prev] ?? 0) * (1 - morph) + (secRumble[cur] ?? 0) * morph;
             const baseRumbleFb = (secRumbleFb[prev] ?? 0) * (1 - morph) + (secRumbleFb[cur] ?? 0) * morph;
             const baseQ = (secQ[prev] ?? 0) * (1 - morph) + (secQ[cur] ?? 0) * morph;
-            const pinch = clamp(control.rightPinch, 0, 1);
-            this.fxHold = Math.max(0, Math.min(1, this.fxHold + (pinch - this.fxHold) * 0.15));
+            this.fxHold = Math.max(0, Math.min(1, this.fxHold + (rPinch - this.fxHold) * 0.15));
             const fx = this.fxHold;
             const cut = expRange01(1 - control.rightY, 180, 14000);
             const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1) + baseQ;
             if (this.fxFilter) {
                 this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
-                this.fxFilter.frequency.value = cut;
-                this.fxFilter.Q.value = q;
+                const tA = this.ctx?.currentTime ?? 0;
+                if (Math.abs(cut - this.lastFxCut) > 8) {
+                    this.lastFxCut = cut;
+                    try {
+                        this.fxFilter.frequency.setTargetAtTime(cut, tA, 0.04);
+                    }
+                    catch {
+                        this.fxFilter.frequency.value = cut;
+                    }
+                }
+                if (Math.abs(q - this.lastFxQ) > 0.02) {
+                    this.lastFxQ = q;
+                    try {
+                        this.fxFilter.Q.setTargetAtTime(q, tA, 0.04);
+                    }
+                    catch {
+                        this.fxFilter.Q.value = q;
+                    }
+                }
             }
             if (this.fxDrive) {
                 this.fxDrive.curve = makeDriveCurve(0.15 + 0.85 * fx + baseDrive);
             }
             if (this.fxDelay && this.fxDelayFb && this.fxDelayMix) {
-                this.fxDelay.delayTime.value = expRange01(control.rightX, 0.12, 0.38);
-                this.fxDelayFb.gain.value = 0.25 + 0.55 * fx + baseDelayFb;
-                this.fxDelayMix.gain.value = 0.00 + 0.55 * fx + baseDelay;
+                const tA = this.ctx?.currentTime ?? 0;
+                {
+                    const target = expRange01(control.rightX, 0.12, 0.38);
+                    if (Math.abs(target - this.lastFxDelayTime) > 0.002) {
+                        this.lastFxDelayTime = target;
+                        try {
+                            this.fxDelay.delayTime.setTargetAtTime(target, tA, 0.045);
+                        }
+                        catch {
+                            this.fxDelay.delayTime.value = target;
+                        }
+                    }
+                }
+                {
+                    const target = 0.25 + 0.55 * fx + baseDelayFb;
+                    if (Math.abs(target - this.lastFxDelayFb) > 0.004) {
+                        this.lastFxDelayFb = target;
+                        try {
+                            this.fxDelayFb.gain.setTargetAtTime(target, tA, 0.06);
+                        }
+                        catch {
+                            this.fxDelayFb.gain.value = target;
+                        }
+                    }
+                }
+                {
+                    const target = 0.00 + 0.55 * fx + baseDelay;
+                    if (Math.abs(target - this.lastFxDelayMix) > 0.004) {
+                        this.lastFxDelayMix = target;
+                        try {
+                            this.fxDelayMix.gain.setTargetAtTime(target, tA, 0.06);
+                        }
+                        catch {
+                            this.fxDelayMix.gain.value = target;
+                        }
+                    }
+                }
             }
             if (this.rumbleSend && this.rumbleFb && this.rumbleDelay) {
                 const b = clamp(control.build, 0, 1);
                 const dens = clamp(control.rightPinch, 0, 1);
-                this.rumbleSend.gain.value = 0.02 + 0.22 * b + baseRumble;
-                this.rumbleFb.gain.value = 0.50 + 0.35 * b + baseRumbleFb;
-                this.rumbleDelay.delayTime.value = expRange01(control.rightX, 0.18, 0.34);
-                if (this.rumbleLP)
-                    this.rumbleLP.frequency.value = expRange01(control.rightY, 120, 260);
-                if (this.rumbleHP)
-                    this.rumbleHP.frequency.value = 28 + 18 * (1 - dens);
+                const tA = this.ctx?.currentTime ?? 0;
+                {
+                    const target = 0.02 + 0.22 * b + baseRumble;
+                    if (Math.abs(target - this.lastRumbleSend) > 0.004) {
+                        this.lastRumbleSend = target;
+                        try {
+                            this.rumbleSend.gain.setTargetAtTime(target, tA, 0.06);
+                        }
+                        catch {
+                            this.rumbleSend.gain.value = target;
+                        }
+                    }
+                }
+                {
+                    const target = 0.50 + 0.35 * b + baseRumbleFb;
+                    if (Math.abs(target - this.lastRumbleFb) > 0.004) {
+                        this.lastRumbleFb = target;
+                        try {
+                            this.rumbleFb.gain.setTargetAtTime(target, tA, 0.06);
+                        }
+                        catch {
+                            this.rumbleFb.gain.value = target;
+                        }
+                    }
+                }
+                {
+                    const target = expRange01(control.rightX, 0.18, 0.34);
+                    if (Math.abs(target - this.lastRumbleDelay) > 0.002) {
+                        this.lastRumbleDelay = target;
+                        try {
+                            this.rumbleDelay.delayTime.setTargetAtTime(target, tA, 0.05);
+                        }
+                        catch {
+                            this.rumbleDelay.delayTime.value = target;
+                        }
+                    }
+                }
+                if (this.rumbleLP) {
+                    const target = expRange01(control.rightY, 120, 260);
+                    if (Math.abs(target - this.lastRumbleLp) > 0.8) {
+                        this.lastRumbleLp = target;
+                        try {
+                            this.rumbleLP.frequency.setTargetAtTime(target, tA, 0.08);
+                        }
+                        catch {
+                            this.rumbleLP.frequency.value = target;
+                        }
+                    }
+                }
+                if (this.rumbleHP) {
+                    const target = 28 + 18 * (1 - dens);
+                    if (Math.abs(target - this.lastRumbleHp) > 0.8) {
+                        this.lastRumbleHp = target;
+                        try {
+                            this.rumbleHP.frequency.setTargetAtTime(target, tA, 0.08);
+                        }
+                        catch {
+                            this.rumbleHP.frequency.value = target;
+                        }
+                    }
+                }
             }
             this.ensureRaveScheduler();
         }
@@ -1152,9 +1289,9 @@ export class DroneWorkletEngine {
                 if (ctx) {
                     const t = ctx.currentTime;
                     if (this.droneBassGain) {
-                        // Bass (left hand): pinch = level. Silent at 0.
-                        const live = 0.70 * Math.pow(clamp(control.leftPinch, 0, 1), 1.25);
-                        const idle = 0.10;
+                        const wave = 0.5 + 0.5 * Math.sin(t * 0.55);
+                        const live = 0.24 * (0.80 + 0.20 * wave);
+                        const idle = 0.12;
                         const bassTarget = kill ? 0 : (live * (1 - this.idleAmt) + idle * this.idleAmt);
                         try {
                             this.droneBassGain.gain.setTargetAtTime(bassTarget, t, 0.08);
@@ -1164,23 +1301,32 @@ export class DroneWorkletEngine {
                         }
                     }
                     if (this.droneBassLP) {
-                        // Bass tone: left Y
-                        const y = clamp(control.leftY, 0, 1);
-                        const cut = expRange01(y, 80, 240);
-                        const q = 0.40 + 0.25 * (1 - y);
+                        const wob = 0.5 + 0.5 * Math.sin(t * 0.18);
+                        const cut = 90 + 35 * wob;
+                        const q = 0.55;
                         if (Math.abs(cut - this.lastBassCut) > 0.5) {
                             this.lastBassCut = cut;
-                            this.droneBassLP.frequency.value = cut;
+                            try {
+                                this.droneBassLP.frequency.setTargetAtTime(cut, t, 0.10);
+                            }
+                            catch {
+                                this.droneBassLP.frequency.value = cut;
+                            }
                         }
                         if (Math.abs(q - this.lastBassQ) > 0.02) {
                             this.lastBassQ = q;
-                            this.droneBassLP.Q.value = q;
+                            try {
+                                this.droneBassLP.Q.setTargetAtTime(q, t, 0.10);
+                            }
+                            catch {
+                                this.droneBassLP.Q.value = q;
+                            }
                         }
                     }
-                    // Bass pitch: left X (deeper overall, small expressive drift).
+                    // Bass pitch: deep + mostly constant (small slow drift).
                     {
-                        const x = clamp(control.leftX, 0, 1);
-                        const rate = expRange01(x, 0.14, 0.36);
+                        const drift = 0.5 + 0.5 * Math.sin(t * 0.11);
+                        const rate = 0.22 + 0.012 * drift;
                         if (Math.abs(rate - this.lastDroneRate) > 0.002) {
                             this.lastDroneRate = rate;
                             if (this.droneBassSrc) {
@@ -1200,10 +1346,9 @@ export class DroneWorkletEngine {
                             }
                         }
                     }
-                    // Bass drive: left pinch (more sustain/weight, less click).
+                    // Bass drive: keep minimal to avoid overload.
                     if (this.droneBassDrive) {
-                        const p = clamp(control.leftPinch, 0, 1);
-                        const amt = 0.20 + 0.12 * p;
+                        const amt = 0.10;
                         if (Math.abs(amt - this.lastBassDriveAmt) > 0.02) {
                             this.lastBassDriveAmt = amt;
                             this.droneBassDrive.curve = makeDriveCurve(amt);
@@ -1325,6 +1470,9 @@ export class DroneWorkletEngine {
             guitarGate
         });
         this.node.port.postMessage({ type: "gate", gate });
+    }
+    update(control) {
+        this.updateFromControl(control);
     }
     handleMidi(events) {
         if (!events.length)
