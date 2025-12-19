@@ -206,6 +206,13 @@ export class DroneWorkletEngine {
     idleAmt = 0;
     lastDroneRate = 1;
     lastDroneRateA = 1;
+    lastBassDriveAmt = -1;
+    lastBassCut = -1;
+    lastBassQ = -1;
+    droneGtrAuto = 0;
+    droneGtrAutoTarget = 0;
+    droneGtrNextSwellT = 0;
+    droneGtrSwellUntilT = 0;
     async loadSample(ctx, url) {
         const res = await fetch(url);
         if (!res.ok) {
@@ -393,9 +400,9 @@ export class DroneWorkletEngine {
             this.droneBassLP = ctx.createBiquadFilter();
             this.droneBassLP.type = "lowpass";
             this.droneBassLP.frequency.value = 220;
-            this.droneBassLP.Q.value = 0.9;
+            this.droneBassLP.Q.value = 0.45;
             this.droneBassDrive = ctx.createWaveShaper();
-            this.droneBassDrive.curve = makeDriveCurve(0.55);
+            this.droneBassDrive.curve = makeDriveCurve(0.22);
             this.droneBassDrive.oversample = "2x";
             this.droneBassGain.connect(this.droneBassLP);
             this.droneBassLP.connect(this.droneBassDrive);
@@ -838,6 +845,11 @@ export class DroneWorkletEngine {
             await ctx.resume();
         }
         this.started = true;
+        // Seed drone guitar auto-swell scheduler.
+        this.droneGtrNextSwellT = ctx.currentTime + 3.0;
+        this.droneGtrSwellUntilT = 0;
+        this.droneGtrAuto = 0;
+        this.droneGtrAutoTarget = 0;
         // Kick off sample loading (async) and scheduler.
         void this.ensureSamplesLoaded();
         void this.ensureDroneStemsLoaded();
@@ -1120,13 +1132,21 @@ export class DroneWorkletEngine {
                     if (this.droneBassLP) {
                         // Bass tone: left Y
                         const y = clamp(control.leftY, 0, 1);
-                        this.droneBassLP.frequency.value = expRange01(y, 55, 170);
-                        this.droneBassLP.Q.value = 0.9 + 0.6 * (1 - y);
+                        const cut = expRange01(y, 80, 240);
+                        const q = 0.40 + 0.25 * (1 - y);
+                        if (Math.abs(cut - this.lastBassCut) > 0.5) {
+                            this.lastBassCut = cut;
+                            this.droneBassLP.frequency.value = cut;
+                        }
+                        if (Math.abs(q - this.lastBassQ) > 0.02) {
+                            this.lastBassQ = q;
+                            this.droneBassLP.Q.value = q;
+                        }
                     }
                     // Bass pitch: left X (deeper overall, small expressive drift).
                     {
                         const x = clamp(control.leftX, 0, 1);
-                        const rate = expRange01(x, 0.07, 0.18);
+                        const rate = expRange01(x, 0.14, 0.36);
                         if (Math.abs(rate - this.lastDroneRate) > 0.002) {
                             this.lastDroneRate = rate;
                             if (this.droneBassSrc) {
@@ -1149,17 +1169,52 @@ export class DroneWorkletEngine {
                     // Bass drive: left pinch (more sustain/weight, less click).
                     if (this.droneBassDrive) {
                         const p = clamp(control.leftPinch, 0, 1);
-                        const amt = 0.55 + 0.30 * p;
-                        this.droneBassDrive.curve = makeDriveCurve(amt);
+                        const amt = 0.20 + 0.12 * p;
+                        if (Math.abs(amt - this.lastBassDriveAmt) > 0.02) {
+                            this.lastBassDriveAmt = amt;
+                            this.droneBassDrive.curve = makeDriveCurve(amt);
+                        }
                     }
                     // Guitar (right hand): full manual control
                     {
                         const p = clamp(control.rightPinch, 0, 1);
                         const bright = clamp(control.rightY, 0, 1);
+                        const dtGtr = control.dt;
+                        // Auto-swell (occasional) when not actively playing by hand.
+                        // Keeps the drone alive even with hands idle.
+                        if (!kill) {
+                            const handActive = p > 0.18;
+                            if (!handActive) {
+                                if (t >= this.droneGtrNextSwellT) {
+                                    const len = 3.5 + 6.5 * this.rand01();
+                                    this.droneGtrSwellUntilT = t + len;
+                                    // Subtle amplitude (scaled down by idleAmt below).
+                                    this.droneGtrAutoTarget = 0.10 + 0.16 * this.rand01();
+                                    const gap = 6.0 + 18.0 * this.rand01();
+                                    this.droneGtrNextSwellT = t + len + gap;
+                                }
+                                if (t >= this.droneGtrSwellUntilT) {
+                                    this.droneGtrAutoTarget = 0;
+                                }
+                            }
+                            else {
+                                // Manual play cancels the auto swell quickly.
+                                this.droneGtrAutoTarget = 0;
+                            }
+                            const atk = 1.0 - Math.exp(-dtGtr * 0.9);
+                            const rel = 1.0 - Math.exp(-dtGtr * 0.55);
+                            const kk = this.droneGtrAutoTarget > this.droneGtrAuto ? atk : rel;
+                            this.droneGtrAuto += (this.droneGtrAutoTarget - this.droneGtrAuto) * kk;
+                        }
+                        else {
+                            this.droneGtrAutoTarget = 0;
+                            this.droneGtrAuto *= Math.pow(0.15, dtGtr);
+                        }
                         // Continuous control: pinch = level. Silent at 0.
                         const live = 0.65 * Math.pow(p, 1.25);
                         const idle = 0.06;
-                        const g = kill ? 0 : (live * (1 - this.idleAmt) + idle * this.idleAmt);
+                        const auto = this.droneGtrAuto * (1 - this.idleAmt);
+                        const g = kill ? 0 : (Math.max(live, auto) * (1 - this.idleAmt) + idle * this.idleAmt);
                         if (this.droneGtrAGain) {
                             try {
                                 this.droneGtrAGain.gain.setTargetAtTime(g, t, 0.10);

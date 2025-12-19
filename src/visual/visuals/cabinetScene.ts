@@ -771,7 +771,7 @@ export class CabinetScene {
     // Soft non-collision for cabinet objects (avoid visible intersections).
     {
       const items: Array<{ m: any; r: number }> = [];
-      if (this.plasmaMesh) items.push({ m: this.plasmaMesh, r: 0.52 });
+      if (this.plasmaMesh) items.push({ m: this.plasmaMesh, r: 0.62 });
       if (this.objA) items.push({ m: this.objA, r: 0.42 });
       if (this.objB && this.objB.visible) items.push({ m: this.objB, r: 0.38 });
       if (this.teapotA) items.push({ m: this.teapotA, r: 0.30 });
@@ -784,7 +784,16 @@ export class CabinetScene {
       };
 
       const strength = 0.9 + 0.9 * clamp01(control.rightPinch) + 0.45 * bp;
-      const iters = this.safeMode ? 1 : 2;
+      const iters = this.safeMode ? 2 : 3;
+
+      // Portal rim collider (torus): keep objects from intersecting the ring volume.
+      // Approximate torus in world space: major radius R in XY plane at rim center.
+      const rimCenter = this.portalRim?.position;
+      const rimR = 0.98;
+      const rimTube = 0.055;
+
+      // Tunnel plane collider: keep objects in front of the portal plane.
+      const tunnelZ = this.tunnelMesh?.position?.z ?? -0.65;
 
       for (let iter = 0; iter < iters; iter++) {
         for (let i = 0; i < items.length; i++) {
@@ -810,6 +819,48 @@ export class CabinetScene {
               clampCabinet(A.position);
               clampCabinet(B.position);
             }
+          }
+        }
+
+        if (rimCenter) {
+          for (let i = 0; i < items.length; i++) {
+            const A = items[i]!.m;
+            const ar = items[i]!.r;
+
+            // Move into rim-local coordinates.
+            this.tmpV2.copy(A.position).sub(rimCenter);
+            const dz = this.tmpV2.z;
+            const rxy = Math.sqrt(this.tmpV2.x * this.tmpV2.x + this.tmpV2.y * this.tmpV2.y);
+            const tubeD = Math.abs(rxy - rimR);
+            const tube = rimTube + ar;
+
+            // Inside the torus tube volume?
+            if (tubeD < tube && Math.abs(dz) < tube) {
+              // Push away from the tube centerline.
+              const dir = rxy >= 1e-4 ? 1.0 / rxy : 0.0;
+              const nx = this.tmpV2.x * dir;
+              const ny = this.tmpV2.y * dir;
+              const sign = (rxy - rimR) >= 0 ? 1 : -1;
+              const push = (tube - tubeD) * 0.75;
+
+              A.position.x += nx * sign * push;
+              A.position.y += ny * sign * push;
+              // Also push slightly in Z to escape the rim plane.
+              A.position.z += (dz >= 0 ? 1 : -1) * (tube - Math.abs(dz)) * 0.25;
+
+              clampCabinet(A.position);
+            }
+          }
+        }
+
+        // Keep objects from intersecting the tunnel plane.
+        for (let i = 0; i < items.length; i++) {
+          const A = items[i]!.m;
+          const ar = items[i]!.r;
+          const minFrontZ = tunnelZ + 0.02 + ar;
+          if (A.position.z < minFrontZ) {
+            A.position.z = minFrontZ;
+            clampCabinet(A.position);
           }
         }
       }
