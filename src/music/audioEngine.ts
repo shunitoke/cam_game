@@ -333,16 +333,16 @@ export class AudioEngine {
   private midiSamplesFallbackTried = false;
 
   private initMidiSamples(useFallback: boolean) {
-    const base = useFallback ? "https://tonejs.github.io/audio/drum-samples/909" : "/samples/user/909";
-    const ext = useFallback ? "mp3" : "wav";
+    const base = useFallback ? "https://tonejs.github.io/audio/drum-samples/909" : "/samples/909";
+    const ext = "mp3";
 
     this.midiSamples = {
       kick: new Tone.Player({ url: `${base}/kick.${ext}` }),
       snare: new Tone.Player({ url: `${base}/snare.${ext}` }),
       hat: new Tone.Player({ url: `${base}/hihat.${ext}` }),
       clap: new Tone.Player({ url: `${base}/clap.${ext}` }),
-      cowbell: new Tone.Player({ url: `${base}/cowbell.${ext}` }),
-      perc: new Tone.Player({ url: `${base}/tom.${ext}` })
+      cowbell: new Tone.Player({ url: `${base}/rimshot.${ext}` }),
+      perc: new Tone.Player({ url: `${base}/openhat.${ext}` })
     };
 
     for (const p of Object.values(this.midiSamples)) {
@@ -655,7 +655,7 @@ export class AudioEngine {
 
       const isAccent = acc[step] === 1 && Math.random() < this.leadAccent;
       const isSlide = sld[step] === 1;
-      const vel = (isAccent ? 0.32 : 0.16) * g * (inBreak ? 0.65 : 1);
+      const vel = (isAccent ? 0.46 : 0.26) * g * (inBreak ? 0.65 : 1);
 
       const note = root.transpose(semi).toNote();
       if (this.raveLeadEnabled) {
@@ -676,7 +676,7 @@ export class AudioEngine {
       if (loopBar < 6) return;
       const step = this.simpleLeadStep++ % leadMel.length;
       const note = leadMel[step]!;
-      this.simpleLead.triggerAttackRelease(note, "4n", time, 0.16 * g);
+      this.simpleLead.triggerAttackRelease(note, "4n", time, 0.26 * g);
     }, "2n", "0");
 
     Tone.Transport.scheduleRepeat((time: number) => {
@@ -690,7 +690,7 @@ export class AudioEngine {
       const loopBar = ((barNum % AudioEngine.LOOP_BARS) + AudioEngine.LOOP_BARS) % AudioEngine.LOOP_BARS;
       if (loopBar !== 0 && loopBar !== 4) return;
       const chord = loopBar === 0 ? this.chordPadA : this.chordPadB;
-      this.pad.triggerAttackRelease(chord as any, "1m", time, 0.075 * g);
+      this.pad.triggerAttackRelease(chord as any, "1m", time, 0.14 * g);
     }, "2m", "0");
 
     Tone.Transport.scheduleRepeat((time: number) => {
@@ -1180,6 +1180,23 @@ export class AudioEngine {
 
         if (n === 46) {
           this.genEnabled = !this.genEnabled;
+          {
+            const p = this.midiSamples.cowbell;
+            if (p && this.midiSamplesLoaded) {
+              const last = this.midiSampleLastT.cowbell ?? -999;
+              if (t - last >= 0.035) {
+                this.midiSampleLastT.cowbell = t;
+                p.playbackRate = 0.95 + Math.random() * 0.12;
+                p.volume.value = lerp(-14, -2, vel);
+                try {
+                  p.start(t);
+                } catch {
+                }
+              }
+            } else {
+              this.clap.triggerAttackRelease("16n", t, vel * 0.35);
+            }
+          }
           continue;
         }
 
@@ -1187,6 +1204,59 @@ export class AudioEngine {
           const ticks = this.getTransportTicksAtTime(t);
           const barNum = Math.floor(ticks / this.transportTicksPerBar);
           if (Number.isFinite(barNum)) this.genFillUntilBar = barNum + 1;
+          {
+            const p = this.midiSamples.perc;
+            if (p && this.midiSamplesLoaded) {
+              const last = this.midiSampleLastT.perc ?? -999;
+              if (t - last >= 0.035) {
+                this.midiSampleLastT.perc = t;
+                p.playbackRate = 0.95 + Math.random() * 0.12;
+                p.volume.value = lerp(-14, -3, vel);
+                try {
+                  p.start(t);
+                } catch {
+                }
+              }
+            } else {
+              this.hat.triggerAttackRelease("16n", t, vel * 0.25);
+            }
+          }
+          continue;
+        }
+
+        if (n === 47) {
+          {
+            const p = this.midiSamples.cowbell;
+            if (p && this.midiSamplesLoaded) {
+              const last = this.midiSampleLastT.cowbell ?? -999;
+              if (t - last >= 0.035) {
+                this.midiSampleLastT.cowbell = t;
+                p.playbackRate = 0.92 + Math.random() * 0.18;
+                p.volume.value = lerp(-12, 0, vel);
+                try {
+                  p.start(t);
+                } catch {
+                }
+              }
+            } else {
+              this.clap.triggerAttackRelease("16n", t, vel * 0.55);
+            }
+          }
+
+          const prevCrush = this.midiCrushAmount;
+          const prevCut = this.midiSampleCutoff;
+          this.midiCrushAmount = Math.max(this.midiCrushAmount, 0.85);
+          this.midiSampleCutoff = Math.min(this.midiSampleCutoff, 0.35);
+          try {
+            Tone.Transport.scheduleOnce((time: number) => {
+              try {
+                this.midiCrushAmount = prevCrush;
+                this.midiSampleCutoff = prevCut;
+              } catch {
+              }
+            }, t + 0.18);
+          } catch {
+          }
           continue;
         }
 

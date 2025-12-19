@@ -98,6 +98,29 @@ export class DroneWorkletEngine {
     raveRand = 0x12345678;
     pulse = 0;
     fxHold = 0;
+    sampleActivityAtMs = {
+        kick: 0,
+        hat: 0,
+        clap: 0,
+        snare: 0,
+        rim: 0,
+        openhat: 0
+    };
+    sampleActivityLevel = {
+        kick: 0,
+        hat: 0,
+        clap: 0,
+        snare: 0,
+        rim: 0,
+        openhat: 0
+    };
+    markSample(name, gain) {
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        this.sampleActivityAtMs[name] = now;
+        const prev = this.sampleActivityLevel[name] ?? 0;
+        const g = Math.max(0, Math.min(1, gain));
+        this.sampleActivityLevel[name] = Math.max(prev * 0.6, g);
+    }
     rand01() {
         let x = this.raveRand | 0;
         x ^= x << 13;
@@ -570,6 +593,7 @@ export class DroneWorkletEngine {
             return;
         if (!this.ctx)
             return;
+        this.markSample("kick", gain);
         if (!this.rumbleSend || !this.rumbleOut) {
             this.fireSample(time, this.sampleKick, gain, 1.0);
             return;
@@ -672,6 +696,7 @@ export class DroneWorkletEngine {
         // Hats
         if (offHat && this.sampleHat) {
             const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
+            this.markSample("hat", v);
             this.fireSample(time, this.sampleHat, v, 1.02);
         }
         if (!fillOn && this.sampleHat) {
@@ -679,9 +704,11 @@ export class DroneWorkletEngine {
             if (ghostOn) {
                 const micro = step === 6 || step === 14 ? 0.006 : 0.0;
                 if (groove === 1 && (step === 9 || step === 13)) {
+                    this.markSample("hat", 0.055 + 0.045 * dens);
                     this.fireSample(time + micro, this.sampleHat, 0.055 + 0.045 * dens, 1.10);
                 }
                 if (groove === 3 && step === 5) {
+                    this.markSample("hat", 0.050 + 0.040 * dens);
                     this.fireSample(time + micro, this.sampleHat, 0.050 + 0.040 * dens, 1.08);
                 }
             }
@@ -692,6 +719,7 @@ export class DroneWorkletEngine {
             if (on) {
                 const v = 0.045 + 0.085 * dens;
                 const r = 1.05 + 0.03 * section;
+                this.markSample("hat", v);
                 this.fireSample(time, this.sampleHat, v, r);
             }
         }
@@ -699,12 +727,14 @@ export class DroneWorkletEngine {
         if (openHat && this.sampleOpenHat) {
             const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
             if (section >= 2 && m > 0.06) {
+                this.markSample("openhat", 0.06 + 0.12 * m);
                 this.fireSample(time, this.sampleOpenHat, 0.06 + 0.12 * m, 1.0);
             }
         }
         // Rim/snare: keep it minimal, no clap
         if (rim && this.sampleRim) {
             if (section >= 1 && dens > 0.15) {
+                this.markSample("rim", 0.08 + 0.10 * dens);
                 this.fireSample(time, this.sampleRim, 0.08 + 0.10 * dens, 1.0);
             }
         }
@@ -712,20 +742,24 @@ export class DroneWorkletEngine {
             // snare comes in later (avoid pop/party clap vibe)
             if (section >= 1) {
                 const v = (section === 1 ? 0.11 : 0.14) + 0.14 * dens;
+                this.markSample("snare", v);
                 this.fireSample(time + 0.004, this.sampleSnare, v, 1.0);
             }
         }
         if (!fillOn && this.sampleSnare && groove === 2 && section >= 2 && dens > 0.35) {
             if (step === 11) {
+                this.markSample("snare", 0.06 + 0.05 * dens);
                 this.fireSample(time + 0.002, this.sampleSnare, 0.06 + 0.05 * dens, 1.0);
             }
         }
         // Fills
         if (fillHat && this.sampleHat) {
             const rr = this.raveFillType === 3 ? 1.18 : 1.14;
+            this.markSample("hat", 0.12);
             this.fireSample(time, this.sampleHat, 0.12, rr);
         }
         if (fillRim && this.sampleRim) {
+            this.markSample("rim", 0.12);
             this.fireSample(time, this.sampleRim, 0.12, 1.0);
         }
     }
@@ -1308,17 +1342,27 @@ export class DroneWorkletEngine {
                 // 36 kick, 38 hat, 39 clap, 40 perc/rim, 37 snare
                 if (e.note === 36 && this.sampleKick)
                     this.fireKick(t, 0.95 * vel);
-                if (e.note === 38 && this.sampleHat)
+                if (e.note === 38 && this.sampleHat) {
+                    this.markSample("hat", 0.20 * vel);
                     this.fireSample(t, this.sampleHat, 0.20 * vel, 1.03);
-                if (e.note === 39 && this.sampleClap)
+                }
+                if (e.note === 39 && this.sampleClap) {
+                    this.markSample("clap", 0.45 * vel);
                     this.fireSample(t, this.sampleClap, 0.45 * vel, 1.0);
-                if (e.note === 37 && this.sampleSnare)
+                }
+                if (e.note === 37 && this.sampleSnare) {
+                    this.markSample("snare", 0.32 * vel);
                     this.fireSample(t, this.sampleSnare, 0.32 * vel, 1.0);
-                if (e.note === 40 && this.sampleRim)
+                }
+                if (e.note === 40 && this.sampleRim) {
+                    this.markSample("rim", 0.18 * vel);
                     this.fireSample(t, this.sampleRim, 0.18 * vel, 1.0);
+                }
                 // Optional: open hat / crash-ish on FX key
-                if (e.note === 47 && this.sampleOpenHat)
+                if (e.note === 47 && this.sampleOpenHat) {
+                    this.markSample("openhat", 0.22 * vel);
                     this.fireSample(t, this.sampleOpenHat, 0.22 * vel, 1.0);
+                }
             }
             return;
         }
@@ -1335,7 +1379,14 @@ export class DroneWorkletEngine {
             }
         }
     }
+    // ...
     // Compatibility helpers for existing HUD code.
+    getActivity() {
+        return {
+            atMs: this.sampleActivityAtMs,
+            level: this.sampleActivityLevel
+        };
+    }
     getWaveforms() {
         if (!this.analyser)
             return null;

@@ -238,7 +238,7 @@ async function main() {
 
   const midiOverlayLegend = el("div", "midiOverlayLegend");
   midiOverlayLegend.innerHTML = `
-    <div class="midiLegendRow"><b>One-octave performance</b> (36–47): KICK, SNARE, HAT, CLAP, PERC, BASS, STAB, LEAD, PAD, FILL, GEN toggle, FX (visual)</div>
+    <div class="midiLegendRow"><b>One-octave performance</b> (36–47): KICK, SNARE, HAT, CLAP, PERC, BASS, STAB, LEAD, PAD (hold), FILL (hit), GEN toggle (hit), FX (burst + hit)</div>
   `;
   midiOverlay.appendChild(midiOverlayLegend);
   document.body.appendChild(midiOverlay);
@@ -612,6 +612,7 @@ async function main() {
   const midiHeld = new Set<number>();
   const midiVel = new Map<number, number>();
   const midiFlashT = new Map<number, number>();
+  const midiHeldSince = new Map<number, number>();
   const midiKeyEls = new Map<number, HTMLDivElement>();
   const midiMin = 36;
   const midiMax = 47;
@@ -679,6 +680,46 @@ async function main() {
   let midiRate = 0;
 
   let overlayMode: "midi" | "keyboard" = "keyboard";
+
+  const releaseAllKeyboardNotes = () => {
+    if (!audio) {
+      keyboardHeldCodes.clear();
+      return;
+    }
+
+    for (const code of keyboardHeldCodes) {
+      const note = keyboardCodeToNote.get(code);
+      if (note == null) continue;
+      try {
+        audio.handleMidi([{ type: "noteoff", channel: 0, note, velocity: 0 }]);
+      } catch {
+      }
+      midiHeld.delete(note);
+      midiVel.set(note, 0);
+    }
+    keyboardHeldCodes.clear();
+  };
+
+  const releaseAllMidiNotes = () => {
+    if (!audio) {
+      midiHeld.clear();
+      midiHeldSince.clear();
+      return;
+    }
+    const ev: any[] = [];
+    for (const note of midiHeld) {
+      ev.push({ type: "noteoff", channel: 0, note, velocity: 0 });
+      midiVel.set(note, 0);
+    }
+    midiHeld.clear();
+    midiHeldSince.clear();
+    if (ev.length) {
+      try {
+        audio.handleMidi(ev as any);
+      } catch {
+      }
+    }
+  };
 
   let running = false;
   let lastT = performance.now();
@@ -938,6 +979,9 @@ async function main() {
     }
 
     overlayMode = !!midiStatus.supported && !midiStatus.error && midiStatus.inputs > 0 ? "midi" : "keyboard";
+    if (overlayMode === "midi") {
+      releaseAllKeyboardNotes();
+    }
     if (overlayOnNow) {
       if (overlayMode === "midi") {
         midiOverlayTitle.textContent = "NanoKey2";
@@ -966,6 +1010,9 @@ async function main() {
     let burst = 0;
     const pending = midi.pending();
     if (pending > 320) {
+      // If we start dropping events, we can lose noteoff and get stuck held keys.
+      // Fail-safe: release held notes before truncating the queue.
+      releaseAllMidiNotes();
       midi.dropOldest(pending - 320);
     }
 
@@ -983,13 +1030,61 @@ async function main() {
             midiHeld.add(e.note);
             midiVel.set(e.note, clamp01(e.velocity));
             midiFlashT.set(e.note, t);
+            midiHeldSince.set(e.note, t);
           }
           if (e.type === "noteoff") {
             midiHeld.delete(e.note);
             midiVel.set(e.note, clamp01(e.velocity));
+            midiHeldSince.delete(e.note);
           }
         }
         audio?.handleMidi(midiEvents);
+      }
+    }
+
+    // Preferred: flash based on actual sample events (worklet engine).
+    // If the engine provides getActivity(), this is the authoritative source for "sample is playing".
+    if (midiOverlayWasOn) {
+      try {
+        const act = (audio as any)?.getActivity?.();
+        if (act && act.atMs && act.level) {
+          const nowMs = performance.now();
+          const ageMs = 160;
+          const hit = (name: string, note: number, minLevel: number) => {
+            const at = act.atMs[name] ?? 0;
+            const lvl = act.level[name] ?? 0;
+            if (at > 0 && nowMs - at <= ageMs && lvl >= minLevel) {
+              midiFlashT.set(note, t);
+              midiVel.set(note, Math.max(midiVel.get(note) ?? 0, clamp01(lvl)));
+            }
+          };
+
+          hit("kick", 36, 0.05);
+          hit("snare", 37, 0.03);
+          hit("hat", 38, 0.02);
+          hit("clap", 39, 0.03);
+          hit("rim", 40, 0.02);
+          hit("openhat", 47, 0.02);
+        }
+      } catch {
+      }
+    }
+
+    // Safety: auto-release stuck notes (missed noteoff, device disconnect, dropped events).
+    // Keep this generous so normal playing doesn't get cut.
+    const maxHoldMs = 1800;
+    if (overlayMode === "midi" && midiHeld.size) {
+      for (const note of midiHeld) {
+        const since = midiHeldSince.get(note);
+        if (since != null && t - since > maxHoldMs) {
+          midiHeld.delete(note);
+          midiHeldSince.delete(note);
+          midiVel.set(note, 0);
+          try {
+            audio?.handleMidi([{ type: "noteoff", channel: 0, note, velocity: 0 }]);
+          } catch {
+          }
+        }
       }
     }
     const midiT1 = performance.now();
@@ -1012,8 +1107,8 @@ async function main() {
         const ft = midiFlashT.get(n) ?? -999;
         const flash = ft > 0 ? Math.max(0, 1 - (t - ft) / 160) : 0;
         const vel = midiVel.get(n) ?? 0;
-        const a = held ? 0.9 : 0.25;
-        const glow = 0.15 + 0.85 * flash;
+        const a = held ? 0.9 : 0.18 + 0.72 * flash;
+        const glow = flash;
         k.style.opacity = String(a);
         k.style.setProperty("--midiVel", String(vel));
         k.style.setProperty("--midiFlash", String(glow));
@@ -1026,7 +1121,8 @@ async function main() {
 
     const vizT0 = performance.now();
     let audioViz: any = null;
-    if (audioVizOn) {
+    const wantOverlayFlashFromAudio = midiOverlayWasOn;
+    if (audioVizOn || wantOverlayFlashFromAudio) {
       const now = performance.now();
       // Throttle analyzer reads: Tone's getValue() often allocates typed arrays and can
       // cause GC/LongTasks if called every frame.
@@ -1039,6 +1135,42 @@ async function main() {
     }
     const vizT1 = performance.now();
     tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
+
+    // Flash overlay keys based on actual audio output (auto-generated track), not only MIDI input.
+    // Uses lastAudioViz which is already throttled.
+    if (midiOverlayWasOn && audioViz) {
+      const peakAbs = (arr: Float32Array | undefined) => {
+        if (!arr || !arr.length) return 0;
+        const n = Math.min(256, arr.length);
+        let p = 0;
+        for (let i = 0; i < n; i += 4) {
+          const v = Math.abs(arr[i] ?? 0);
+          if (v > p) p = v;
+        }
+        return p;
+      };
+
+      const kickP = peakAbs((audioViz as any).kick as Float32Array | undefined);
+      const hatP = peakAbs((audioViz as any).hat as Float32Array | undefined);
+      const bassP = peakAbs((audioViz as any).bass as Float32Array | undefined);
+      const stabP = peakAbs((audioViz as any).stab as Float32Array | undefined);
+      const leadP = peakAbs((audioViz as any).lead as Float32Array | undefined);
+      const padP = peakAbs((audioViz as any).pad as Float32Array | undefined);
+
+      const flash = (note: number, p: number, thr: number) => {
+        if (p <= thr) return;
+        const v = clamp01((p - thr) / Math.max(1e-6, 1 - thr));
+        midiFlashT.set(note, t);
+        midiVel.set(note, Math.max(midiVel.get(note) ?? 0, v));
+      };
+
+      flash(36, kickP, 0.10);
+      flash(38, hatP, 0.06);
+      flash(41, bassP, 0.07);
+      flash(42, stabP, 0.06);
+      flash(43, leadP, 0.04);
+      flash(44, padP, 0.03);
+    }
 
     const beatPulse = audio?.getPulse?.() ?? 0;
     if (audioViz) {
@@ -1671,6 +1803,18 @@ async function main() {
     midiFlashT.set(note, midiLastEventAt);
 
     audio.handleMidi([{ type: "noteoff", channel: 0, note, velocity: 0 }]);
+  });
+
+  window.addEventListener("blur", () => {
+    releaseAllKeyboardNotes();
+    releaseAllMidiNotes();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") {
+      releaseAllKeyboardNotes();
+      releaseAllMidiNotes();
+    }
   });
 }
 
