@@ -192,6 +192,15 @@ export class DroneWorkletEngine {
   private sceneLeadBoost = 1;
   private scenePadBrightBoost = 0;
   private sceneFxBoost = 0;
+  private readonly macroPadLiftDurationMs = 8000;
+  private readonly macroPercBoostDurationMs = 6000;
+  private readonly macroFxBlastDurationMs = 5500;
+  private macroPadLiftUntilMs = 0;
+  private macroPercBoostUntilMs = 0;
+  private macroFxBlastUntilMs = 0;
+  private macroPadLiftLevel = 0;
+  private macroPercBoostLevel = 0;
+  private macroFxBlastLevel = 0;
 
   private resetArrangementStages() {
     this.arrangementStage = 0;
@@ -235,9 +244,15 @@ export class DroneWorkletEngine {
   private updateArrangementStageProgress() {
     if (this.arrangementStage === 0 && this.raveTotalBars >= this.stageKickBar) {
       this.arrangementStage = 1;
+      this.applyFlowScene(1);
     }
     if (this.arrangementStage === 1 && this.raveTotalBars >= this.stageSynthBar) {
       this.arrangementStage = 2;
+      this.applyFlowScene(2);
+    }
+    if (this.arrangementStage >= 2 && this.raveTotalBars % 16 === 0) {
+      const nextScene = ((this.flowScene + 1) % 4) as 0 | 1 | 2 | 3;
+      this.applyFlowScene(nextScene);
     }
   }
 
@@ -263,6 +278,24 @@ export class DroneWorkletEngine {
   }
 
   private drumSat: WaveShaperNode | null = null;
+
+  private triggerMacroPadLift(strength: number) {
+    const nowMs = performance.now();
+    const extra = this.macroPadLiftDurationMs * (0.4 + 0.6 * strength);
+    this.macroPadLiftUntilMs = Math.max(this.macroPadLiftUntilMs, nowMs) + extra;
+  }
+
+  private triggerMacroPercBoost(strength: number) {
+    const nowMs = performance.now();
+    const extra = this.macroPercBoostDurationMs * (0.45 + 0.55 * strength);
+    this.macroPercBoostUntilMs = Math.max(this.macroPercBoostUntilMs, nowMs) + extra;
+  }
+
+  private triggerMacroFxBlast(strength: number) {
+    const nowMs = performance.now();
+    const extra = this.macroFxBlastDurationMs * (0.5 + 0.5 * strength);
+    this.macroFxBlastUntilMs = Math.max(this.macroFxBlastUntilMs, nowMs) + extra;
+  }
 
   private markSample(name: string, gain: number) {
     const now = performance.now();
@@ -834,10 +867,12 @@ export class DroneWorkletEngine {
     // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
     // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
     const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+    const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
+    const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
     const introSlope = clamp(this.raveTotalBars / Math.max(1, this.stageKickBar), 0, 1);
     const kickMix = Math.min(1, this.stageMix(1, 4) + introSlope * 0.5);
-    const hatMix = kickMix;
-    const percMix = clamp((kickMix - 0.25) / 0.75, 0, 1);
+    const hatMix = Math.min(1, kickMix * hatBoost);
+    const percMix = clamp((kickMix - 0.25) / 0.75, 0, 1) * percBoost;
     const triggerKick = (when: number, gain: number) => {
       if (kickMix <= 0.02) return;
       this.fireKick(when, gain * kickMix);
@@ -1326,6 +1361,17 @@ export class DroneWorkletEngine {
     // Keep main-thread messages low-frequency; the DSP is in the worklet.
     if (now - this.lastParamsSentAt < 33) return;
     this.lastParamsSentAt = now;
+    const nowMs = now;
+    const macroStep = (current: number, target: number) => {
+      const rate = target > current ? 0.32 : 0.08;
+      return current + (target - current) * rate;
+    };
+    const padLiftTarget = nowMs < this.macroPadLiftUntilMs ? 1 : 0;
+    const percBoostTarget = nowMs < this.macroPercBoostUntilMs ? 1 : 0;
+    const fxBlastTarget = nowMs < this.macroFxBlastUntilMs ? 1 : 0;
+    this.macroPadLiftLevel = macroStep(this.macroPadLiftLevel, padLiftTarget);
+    this.macroPercBoostLevel = macroStep(this.macroPercBoostLevel, percBoostTarget);
+    this.macroFxBlastLevel = macroStep(this.macroFxBlastLevel, fxBlastTarget);
 
     // Base pitch: In DRONE mode allow left-hand/midi to shift pitch; in RAVE keep fixed.
     const baseHz =
@@ -1335,11 +1381,12 @@ export class DroneWorkletEngine {
           : expRange01(control.leftX, 55, 220)
         : this.padBaseHz;
 
-    // Brightness: right hand Y (in ControlBus Y is already flipped)
     const cutoff = expRange01(control.rightY, 120, 6200);
-
-    // Drive/texture: build + right pinch
-    const drive = clamp(0.1 + control.build * 1.25 + control.rightPinch * 0.6, 0, 2.2);
+    const fxBoost = this.sceneFxBoost + this.macroFxBlastLevel * 0.9;
+    const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
+    const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
+    // Drive/texture: build + right pinch + FX macros
+    const drive = clamp(0.1 + control.build * 1.25 + control.rightPinch * 0.6 + fxBoost * 0.6, 0, 2.4);
 
     // LFO
     const lfoHz = expRange01(control.rightX, 0.05, 3.2);
@@ -1349,15 +1396,18 @@ export class DroneWorkletEngine {
     const attack = expRange01(1 - control.leftY, 0.006, 0.18);
     const release = expRange01(1 - control.leftY, 0.06, 0.9);
     const detune = clamp(0.0015 + control.build * 0.008 + control.rightSpeed * 0.004, 0, 0.02);
-    const sub = clamp(0.12 + control.build * 0.55, 0, 0.85);
-    const noiseRaw = clamp(0.01 + control.rightPinch * 0.08, 0, 0.2);
+    const sub = clamp(0.12 + control.build * 0.55 + this.macroPadLiftLevel * 0.2, 0, 0.95);
+    const noiseRaw = clamp(0.01 + control.rightPinch * 0.08 + fxBoost * 0.05, 0, 0.25);
     const noise = this.mode === "drone" ? 0 : noiseRaw;
 
     // Delay as space: right pinch opens mix, build increases feedback.
     const delayTime = expRange01(control.rightX, 0.09, 0.42);
     const delayFb = clamp(0.18 + control.build * 0.55, 0, 0.86);
     const delayMixRaw = clamp(0.03 + control.rightPinch * 0.22, 0, 0.35);
-    const delayMix = this.mode === "drone" ? 0.08 + 0.12 * clamp(control.build, 0, 1) : delayMixRaw;
+    const delayMix =
+      this.mode === "drone"
+        ? 0.08 + 0.12 * clamp(control.build, 0, 1)
+        : clamp(delayMixRaw + fxBoost * 0.15, 0, 0.65);
 
     const rPinchRaw = clamp(control.rightPinch, 0, 1);
     const rPinch = rPinchRaw <= 0.30 ? 0 : clamp((rPinchRaw - 0.30) / 0.70, 0, 1);
@@ -1389,10 +1439,12 @@ export class DroneWorkletEngine {
         this.padBright = 0.65;
         this.padDetune = 0.012;
       } else {
-        const padLevel = clamp((0.18 + control.build * 0.35) * synthStage, 0, 0.65);
+        const padBrightBase = clamp(control.rightY + this.scenePadBrightBoost, 0, 1);
+        const padBright = clamp(padBrightBase + this.macroPadLiftLevel * 0.25, 0, 1);
+        const padLevelBase = clamp((0.18 + control.build * 0.35) * synthStage, 0, 0.65);
+        const padLevel = Math.min(0.9, padLevelBase * (1 + this.macroPadLiftLevel * 0.7));
         const padGate = 1;
-        const padFreq = baseHz * 1.2;
-        const padBright = clamp(control.rightY, 0, 1);
+        const padFreq = baseHz * (1.2 + this.macroPadLiftLevel * 0.3);
         const padDetune = clamp(0.004 + control.leftPinch * 0.012, 0, 0.04);
         this.padGain = padLevel;
         this.padGate = padGate;
@@ -1408,10 +1460,15 @@ export class DroneWorkletEngine {
         this.leadBright = 0.70;
         this.leadProb = 1;
       } else {
-        const leadLevel = clamp((0.12 + control.build * 0.28) * synthStage, 0, 0.55);
+        const leadLevelBase = clamp((0.12 + control.build * 0.28) * synthStage * this.sceneLeadBoost, 0, 0.6);
+        const leadLevel = clamp(leadLevelBase * (1 + this.macroPadLiftLevel * 0.35), 0, 0.65);
         const leadFreq = baseHz * 2.4;
         const leadBright = clamp(control.rightY, 0, 1);
-        const leadProb = clamp(0.08 + control.build * 0.28 + this.rand01() * 0.04, 0, 0.75);
+        const leadProb = clamp(
+          (0.08 + control.build * 0.28 + this.rand01() * 0.04) * (1 + this.macroPadLiftLevel * 0.4),
+          0,
+          0.85
+        );
         this.leadGain = leadLevel;
         this.leadFreq = leadFreq;
         this.leadBright = leadBright;
@@ -1869,6 +1926,23 @@ export class DroneWorkletEngine {
         if (e.note === 47 && this.sampleOpenHat) {
           this.markSample("openhat", 0.22 * vel);
           this.fireSample(t, this.sampleOpenHat, 0.22 * vel, 1.0);
+        }
+        if (e.note === 45) {
+          this.triggerMacroPadLift(v);
+        }
+        if (e.note === 46) {
+          this.triggerMacroPercBoost(v);
+          if (this.sampleClap) {
+            const rollCount = 3 + Math.floor(this.rand01() * 3);
+            for (let i = 0; i < rollCount; i++) {
+              const dt = 0.02 * i;
+              this.markSample("clap", 0.25 * vel);
+              this.fireSample(t + dt, this.sampleClap, 0.25 * vel, 1.08 + 0.01 * i);
+            }
+          }
+        }
+        if (e.note === 47) {
+          this.triggerMacroFxBlast(v);
         }
 
         // Pad/lead MIDI: 42/44 -> pad, 43 -> lead

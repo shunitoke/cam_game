@@ -182,8 +182,12 @@ async function main() {
         "Gestures (RAVE)\n" +
         "- Left X: tempo\n" +
         "- Right Y: drum tone\n" +
-        "- Right pinch: hats\n" +
-        "- Both hands: build\n";
+        "- Right pinch: FX drive\n" +
+        "- Left pinch: pad gate\n" +
+        "- Key 45: Pad lift / brightness\n" +
+        "- Key 46: Perc roll boost\n" +
+        "- Key 47: FX sweep + burst\n" +
+        "- Hands: autopilot";
     }
   };
 
@@ -255,8 +259,12 @@ async function main() {
 
   const midiOverlayLegend = el("div", "midiOverlayLegend");
   midiOverlayLegend.innerHTML = `
-    <div class="midiLegendRow"><b>One-octave performance</b> (36–47): KICK, SNARE, HAT, CLAP, PERC, BASS, STAB, LEAD, PAD (hold), FILL (hit), GEN toggle (hit), FX (burst + hit)</div>
-  `;
+    <div class="midiLegendRow">
+      <b>One-octave performance</b> (36–47):
+      36 KICK · 37 SNARE · 38 HAT · 39 CLAP · 40 RIM ·
+      41 BASS · 42 PAD · 43 LEAD · 44 PAD ·
+      45 PAD LIFT · 46 PERC ROLL · 47 FX SWEEP/BURST
+    </div>`;
   midiOverlay.appendChild(midiOverlayLegend);
   document.body.appendChild(midiOverlay);
 
