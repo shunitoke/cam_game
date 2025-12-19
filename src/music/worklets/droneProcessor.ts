@@ -405,8 +405,8 @@ class DroneProcessor extends AudioWorkletProcessor {
       const padCut = 220 + this.padBright * 4200;
       const padA = clamp((2 * Math.PI * padCut) / sr, 0.0003, 0.9);
       this.padLp = this.padLp + (pad - this.padLp) * padA;
-      pad = Math.tanh(this.padLp * (1.2 + 2.4 * this.padBright));
-      pad *= this.padEnv * 3.4; // boost vs main drone
+      pad = Math.tanh(this.padLp * (0.85 + 1.2 * this.padBright));
+      pad *= this.padEnv * 1.2;
 
       // --- Lead: polyBLEP saw + subtle FM for edge
       if (this.mode === "performance") {
@@ -430,13 +430,13 @@ class DroneProcessor extends AudioWorkletProcessor {
 
       // tiny FM from sub to add motion
       const fm = Math.sin(pLead * Math.PI * 2 * 2) * 0.12;
-      leadSaw = Math.tanh((leadSaw + fm) * (1.0 + 2.6 * this.leadBright));
+      leadSaw = Math.tanh((leadSaw + fm) * (0.9 + 1.8 * this.leadBright));
 
       const ldCut = 480 + this.leadBright * 6200;
       const ldA = clamp((2 * Math.PI * ldCut) / sr, 0.0008, 0.95);
       this.leadLp = this.leadLp + (leadSaw - this.leadLp) * ldA;
       let ld = this.leadLp;
-      ld *= this.leadEnv * this.leadGain * 3.8;
+      ld *= this.leadEnv * this.leadGain * 1.3;
 
       // If in performance mode and pad/lead present, ensure output is not fully muted.
       if (this.mode === "performance" && (this.padEnv > 1e-4 || this.leadEnv > 1e-4)) {

@@ -747,6 +747,43 @@ async function main() {
   let lastAudioVizAt = 0;
   let lastAudioViz: any = null;
 
+  const applyAudioMode = (
+    mode: "performance" | "drone",
+    options: { forceScene?: boolean } = {}
+  ) => {
+    const prevMode = audioMode;
+    audioMode = mode;
+
+    modeBtn.textContent = mode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
+    updateGestureHint(mode);
+    audio?.setMode(mode);
+
+    const shouldResetScene = options.forceScene || prevMode !== mode;
+    if (mode === "drone") {
+      if (shouldResetScene) {
+        const s = visuals.setScene("drone");
+        sceneBadge.textContent = `Scene: ${s.name}`;
+        renderHints(s.id, s.name);
+        audio?.setScene(s.id);
+      }
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
+    } else {
+      if (shouldResetScene) {
+        const s = visuals.setScene("particles");
+        sceneBadge.textContent = `Scene: ${s.name}`;
+        renderHints(s.id, s.name);
+        audio?.setScene(s.id);
+      }
+      prevBtn.disabled = !running;
+      nextBtn.disabled = !running;
+    }
+
+    if (shouldResetScene) {
+      lastAutoSceneAt = performance.now();
+    }
+  };
+
   let stallScore = 0;
   let lastAutoTrackerRestartAt = 0;
   let severeStallScore = 0;
@@ -1548,7 +1585,7 @@ async function main() {
       const a = audio;
       if (!a) throw new Error("AudioEngine not initialized");
 
-      a.setMode(audioMode);
+      applyAudioMode(audioMode, { forceScene: true });
 
       try {
         await a.start();
@@ -1650,29 +1687,8 @@ async function main() {
   });
 
   modeBtn.addEventListener("click", () => {
-    audioMode = audioMode === "drone" ? "performance" : "drone";
-    modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
-    updateGestureHint(audioMode);
-    audio?.setMode(audioMode);
-    if (audioMode === "drone") {
-      const s = visuals.setScene("drone");
-      sceneBadge.textContent = `Scene: ${s.name}`;
-      renderHints(s.id, s.name);
-      audio?.setScene(s.id);
-
-      prevBtn.disabled = true;
-      nextBtn.disabled = true;
-    } else {
-      // Leaving DRONE: always jump to the first rave scene.
-      const s = visuals.setScene("particles");
-      sceneBadge.textContent = `Scene: ${s.name}`;
-      renderHints(s.id, s.name);
-      audio?.setScene(s.id);
-
-      prevBtn.disabled = !running;
-      nextBtn.disabled = !running;
-    }
-    lastAutoSceneAt = performance.now();
+    const nextMode = audioMode === "drone" ? "performance" : "drone";
+    applyAudioMode(nextMode, { forceScene: true });
   });
 
   prevBtn.addEventListener("click", () => {
@@ -1808,7 +1824,7 @@ async function main() {
           audSpan.textContent = "off";
         } else {
           audSpan.textContent = "starting";
-          audio.setMode(audioMode);
+          applyAudioMode(audioMode);
           audio.setSafeMode(false);
           void audio.start();
           audSpan.textContent = "on";
