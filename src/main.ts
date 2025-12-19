@@ -1113,12 +1113,15 @@ async function main() {
             }
           };
 
-          hit("kick", 36, 0.05);
-          hit("snare", 37, 0.03);
-          hit("hat", 38, 0.02);
-          hit("clap", 39, 0.03);
-          hit("rim", 40, 0.02);
-          hit("openhat", 47, 0.02);
+          hit("kick", 36, 0);
+          hit("snare", 37, 0);
+          hit("hat", 38, 0);
+          hit("clap", 39, 0);
+          hit("rim", 40, 0);
+          hit("openhat", 47, 0);
+          hit("pad", 42, 0);
+          hit("pad", 44, 0);
+          hit("lead", 43, 0);
         }
       } catch {
       }

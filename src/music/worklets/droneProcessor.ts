@@ -379,6 +379,9 @@ class DroneProcessor extends AudioWorkletProcessor {
       const padRel = 1 - Math.exp(-1 / (sr * 0.42));
       const padK = this.padTarget > this.padEnv ? padAtk : padRel;
       this.padEnv += (this.padTarget - this.padEnv) * padK;
+      if (this.padGain > 1e-3 && this.padEnv > 1e-3) {
+        this.port?.postMessage({ type: "activity", name: "pad", level: this.padEnv * this.padGain });
+      }
 
       // slow chorus on detune
       this.padChorusPhase += 0.15 * invSr;
@@ -418,6 +421,9 @@ class DroneProcessor extends AudioWorkletProcessor {
       const leadRel = 1 - Math.exp(-1 / (sr * 0.10));
       const leadK = this.leadGate > this.leadEnv ? leadAtk : leadRel;
       this.leadEnv += (this.leadGate - this.leadEnv) * leadK;
+      if (this.leadGain > 1e-3 && this.leadEnv > 1e-3) {
+        this.port?.postMessage({ type: "activity", name: "lead", level: this.leadEnv * this.leadGain });
+      }
       if (this.leadEnv < 1e-4 && this.mode !== "performance") this.leadGate = 0;
 
       const leadDt = this.leadFreq * invSr;
