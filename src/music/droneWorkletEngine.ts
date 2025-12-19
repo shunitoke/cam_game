@@ -1075,7 +1075,7 @@ export class DroneWorkletEngine {
     };
 
     const master = ctx.createGain();
-    master.gain.value = 0.55;
+    master.gain.value = 0.48;
     this.master = master;
 
     this.limiter = ctx.createDynamicsCompressor();
