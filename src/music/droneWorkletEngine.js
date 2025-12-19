@@ -89,6 +89,12 @@ export class DroneWorkletEngine {
     raveSectionChangeT = 0;
     raveFillType = 0;
     raveFillUntilBar = 0;
+    raveGroove = 0;
+    raveNextGrooveBar = 0;
+    raveBarVariant = 0;
+    raveVariantUntilBar = 0;
+    raveNextVariantBar = 0;
+    raveLastVariantBar = 0;
     raveRand = 0x12345678;
     pulse = 0;
     fxHold = 0;
@@ -105,6 +111,68 @@ export class DroneWorkletEngine {
         const a = (this.raveSection + 1) % 3;
         const b = (this.raveSection + 2) % 3;
         return r < 0.55 ? a : b;
+    }
+    pickNextGroove() {
+        const r = this.rand01();
+        if (r < 0.50)
+            return 0;
+        if (r < 0.76)
+            return 1;
+        if (r < 0.92)
+            return 2;
+        return 3;
+    }
+    maybeAdvanceGroove(bar) {
+        if (bar < this.raveNextGrooveBar)
+            return;
+        this.raveGroove = this.pickNextGroove();
+        const r = this.rand01();
+        const len = r < 0.15 ? 8 : r < 0.75 ? 4 : 2;
+        this.raveNextGrooveBar = bar + len;
+    }
+    pickBarVariant(section, dens) {
+        // 0 normal
+        // 1 kick-drop (no kick)
+        // 2 kick-sparse (kick only on 1)
+        // 3 half-time (kick on 1+3 only)
+        // 4 hats-only (no kick + no snare, percussion stays)
+        const r = this.rand01();
+        // Variants should be able to happen even with no hands.
+        if (r < 0.42)
+            return 1;
+        if (r < 0.70)
+            return 2;
+        if (r < 0.88)
+            return 3;
+        return 4;
+    }
+    maybeAdvanceBarVariant(bar, section, dens, fillOn) {
+        if (bar < this.raveNextVariantBar)
+            return;
+        if (fillOn)
+            return;
+        // One-bar holes, with cooldown. Must work even with no hands.
+        // When no hands, make the break chance higher so you still get movement.
+        const handsCount = (this.lastControlHandsCount ?? 0) | 0;
+        const idleBoost = handsCount > 0 ? 0 : 0.08;
+        const baseChance = section <= 0 ? 0.10 : section === 1 ? 0.13 : 0.16;
+        const chance = Math.min(0.40, baseChance + idleBoost);
+        // Anti-stale: if we haven't had a break for a while, force one.
+        const barsSince = Math.max(0, (bar - (this.raveLastVariantBar | 0)) | 0);
+        const force = barsSince >= 24;
+        if (force || this.rand01() < chance) {
+            this.raveBarVariant = this.pickBarVariant(section, dens);
+            this.raveVariantUntilBar = bar + 1;
+            this.raveLastVariantBar = bar;
+            const rr = this.rand01();
+            const cooldown = rr < 0.20 ? 16 : rr < 0.70 ? 12 : 8;
+            this.raveNextVariantBar = bar + cooldown;
+        }
+        else {
+            this.raveBarVariant = 0;
+            this.raveVariantUntilBar = 0;
+            this.raveNextVariantBar = bar + 4;
+        }
     }
     maybeAdvanceArrangement(bar) {
         if (!this.ctx)
@@ -133,6 +201,7 @@ export class DroneWorkletEngine {
     gate = 0;
     currentMidi = null;
     lastRightPinch = 0;
+    lastControlHandsCount = 0;
     lastParamsSentAt = 0;
     idleAmt = 0;
     lastDroneRate = 1;
@@ -324,9 +393,9 @@ export class DroneWorkletEngine {
             this.droneBassLP = ctx.createBiquadFilter();
             this.droneBassLP.type = "lowpass";
             this.droneBassLP.frequency.value = 220;
-            this.droneBassLP.Q.value = 0.5;
+            this.droneBassLP.Q.value = 0.9;
             this.droneBassDrive = ctx.createWaveShaper();
-            this.droneBassDrive.curve = makeDriveCurve(0.35);
+            this.droneBassDrive.curve = makeDriveCurve(0.55);
             this.droneBassDrive.oversample = "2x";
             this.droneBassGain.connect(this.droneBassLP);
             this.droneBassLP.connect(this.droneBassDrive);
@@ -415,6 +484,12 @@ export class DroneWorkletEngine {
         this.raveSectionChangeT = ctx.currentTime;
         this.raveFillType = 0;
         this.raveFillUntilBar = 0;
+        this.raveGroove = 0;
+        this.raveNextGrooveBar = 2;
+        this.raveBarVariant = 0;
+        this.raveVariantUntilBar = 0;
+        this.raveNextVariantBar = 4;
+        this.raveLastVariantBar = 0;
         this.raveRand = ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) | 0) || 0x12345678;
         const tick = () => {
             if (!this.ctx)
@@ -437,6 +512,10 @@ export class DroneWorkletEngine {
             while (this.raveNextStepT < now + lookahead) {
                 if (this.raveStep === 0) {
                     this.maybeAdvanceArrangement(this.raveBar);
+                    this.maybeAdvanceGroove(this.raveBar);
+                    const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+                    const fillOn = this.raveFillUntilBar > this.raveBar;
+                    this.maybeAdvanceBarVariant(this.raveBar, this.raveSection, dens, fillOn);
                 }
                 this.scheduleRaveStep(this.raveNextStepT, this.raveStep);
                 this.raveStep = (this.raveStep + 1) & 15;
@@ -523,26 +602,82 @@ export class DroneWorkletEngine {
         const bar = this.raveBar;
         const section = this.raveSection;
         const fillOn = this.raveFillUntilBar > bar;
-        const kick = step === 0 || step === 4 || step === 8 || step === 12;
+        const groove = this.raveGroove | 0;
+        const variantOn = this.raveVariantUntilBar > bar;
+        const variant = variantOn ? (this.raveBarVariant | 0) : 0;
+        let kick = step === 0 || step === 4 || step === 8 || step === 12;
         const offHat = step === 2 || step === 6 || step === 10 || step === 14;
         const hat16 = (step & 1) === 1;
         const openHat = step === 14;
         // Sparse minimal punctuation
-        const rim = step === 10;
-        const snare = step === 12;
+        let rim = step === 10 || (groove === 2 && step === 6);
+        let snare = step === 12;
+        // Global kick gating: when a break variant is active, we must also suppress ALL ghost kicks.
+        let kickAllowed = true;
+        if (!fillOn && variantOn) {
+            if (variant === 1) {
+                // Kick-drop bar.
+                kick = false;
+                kickAllowed = false;
+            }
+            else if (variant === 2) {
+                // Kick only on 1.
+                kick = step === 0;
+            }
+            else if (variant === 3) {
+                // Half-time: keep 1+3.
+                kick = step === 0 || step === 8;
+            }
+            else if (variant === 4) {
+                // Hats-only: keep hat grid, drop kick + snare for a bar.
+                kick = false;
+                kickAllowed = false;
+                snare = false;
+                // Rim can stay (quiet) as punctuation.
+                rim = rim && section >= 2 && dens > 0.25;
+            }
+        }
         const fillHat = fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
         const fillRim = fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
-        if (kick) {
+        if (kickAllowed && kick) {
             this.fireKick(time, 1.0);
         }
+        if (!fillOn) {
+            if (groove === 1) {
+                if (kickAllowed && step === 7 && section >= 1 && dens > 0.25)
+                    this.fireKick(time, 0.16);
+                if (kickAllowed && step === 15 && section >= 2 && dens > 0.45)
+                    this.fireKick(time, 0.14);
+            }
+            if (groove === 2) {
+                if (kickAllowed && step === 3 && section >= 2 && dens > 0.55)
+                    this.fireKick(time, 0.15);
+            }
+            if (groove === 3) {
+                if (kickAllowed && step === 11 && section >= 1 && dens > 0.40)
+                    this.fireKick(time, 0.12);
+            }
+        }
         // Occasional pre-push only at phrase end
-        if (fillOn && step === 15 && this.raveFillType === 3) {
+        if (kickAllowed && fillOn && step === 15 && this.raveFillType === 3) {
             this.fireKick(time, 0.22);
         }
         // Hats
         if (offHat && this.sampleHat) {
             const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
             this.fireSample(time, this.sampleHat, v, 1.02);
+        }
+        if (!fillOn && this.sampleHat) {
+            const ghostOn = (section >= 1 && dens > 0.25) || (section >= 2 && dens > 0.12);
+            if (ghostOn) {
+                const micro = step === 6 || step === 14 ? 0.006 : 0.0;
+                if (groove === 1 && (step === 9 || step === 13)) {
+                    this.fireSample(time + micro, this.sampleHat, 0.055 + 0.045 * dens, 1.10);
+                }
+                if (groove === 3 && step === 5) {
+                    this.fireSample(time + micro, this.sampleHat, 0.050 + 0.040 * dens, 1.08);
+                }
+            }
         }
         // 16th hats come in gradually and with pinch
         if (hat16 && this.sampleHat) {
@@ -571,6 +706,11 @@ export class DroneWorkletEngine {
             if (section >= 1) {
                 const v = (section === 1 ? 0.11 : 0.14) + 0.14 * dens;
                 this.fireSample(time + 0.004, this.sampleSnare, v, 1.0);
+            }
+        }
+        if (!fillOn && this.sampleSnare && groove === 2 && section >= 2 && dens > 0.35) {
+            if (step === 11) {
+                this.fireSample(time + 0.002, this.sampleSnare, 0.06 + 0.05 * dens, 1.0);
             }
         }
         // Fills
@@ -841,6 +981,8 @@ export class DroneWorkletEngine {
             const dt = Math.max(0, Math.min(0.05, control.dt ?? 0.016));
             this.pulse = Math.max(0, this.pulse - dt * 2.6);
         }
+        // Track hands count for RAVE scheduling decisions (breakdowns should happen even with no hands).
+        this.lastControlHandsCount = (control.hands?.count ?? 0) | 0;
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();
         // Keep main-thread messages low-frequency; the DSP is in the worklet.
         if (now - this.lastParamsSentAt < 33)
@@ -977,7 +1119,38 @@ export class DroneWorkletEngine {
                     }
                     if (this.droneBassLP) {
                         // Bass tone: left Y
-                        this.droneBassLP.frequency.value = expRange01(clamp(control.leftY, 0, 1), 90, 280);
+                        const y = clamp(control.leftY, 0, 1);
+                        this.droneBassLP.frequency.value = expRange01(y, 55, 170);
+                        this.droneBassLP.Q.value = 0.9 + 0.6 * (1 - y);
+                    }
+                    // Bass pitch: left X (deeper overall, small expressive drift).
+                    {
+                        const x = clamp(control.leftX, 0, 1);
+                        const rate = expRange01(x, 0.07, 0.18);
+                        if (Math.abs(rate - this.lastDroneRate) > 0.002) {
+                            this.lastDroneRate = rate;
+                            if (this.droneBassSrc) {
+                                try {
+                                    this.droneBassSrc.playbackRate.setTargetAtTime(rate, t, 0.18);
+                                }
+                                catch {
+                                    this.droneBassSrc.playbackRate.value = rate;
+                                }
+                            }
+                            if (this.droneBassEl) {
+                                try {
+                                    this.droneBassEl.playbackRate = rate;
+                                }
+                                catch {
+                                }
+                            }
+                        }
+                    }
+                    // Bass drive: left pinch (more sustain/weight, less click).
+                    if (this.droneBassDrive) {
+                        const p = clamp(control.leftPinch, 0, 1);
+                        const amt = 0.55 + 0.30 * p;
+                        this.droneBassDrive.curve = makeDriveCurve(amt);
                     }
                     // Guitar (right hand): full manual control
                     {

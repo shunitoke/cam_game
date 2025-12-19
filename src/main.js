@@ -250,13 +250,23 @@ async function main() {
                 ["R", "reset"]
             ]
         },
-        plasma: {
-            title: "Plasma",
+        cabinet: {
+            title: "Cabinet",
             items: [
-                ["Right", "palette"],
-                ["Pinch", "contrast"],
-                ["Build", "energy"],
-                ["MIDI", "wobble"],
+                ["Right X", "portal twist"],
+                ["Right Y", "motion"],
+                ["Right pinch", "glow/bump"],
+                ["Right speed", "detail"],
+                ["Build", "drive"],
+                ["MIDI", "burst"],
+                ["R", "reset"]
+            ]
+        },
+        logPolar: {
+            title: "LogPolar",
+            items: [
+                ["Right Y", "speed"],
+                ["Build", "drive"],
                 ["R", "reset"]
             ]
         },
@@ -284,19 +294,6 @@ async function main() {
                 ["R", "reset"]
             ]
         },
-        tunnel: {
-            title: "Tunnel",
-            items: [
-                ["Pinch", "glow"],
-                ["Right X", "twist"],
-                ["Right Y", "speed"],
-                ["Right speed", "steps"],
-                ["Build", "aggr"],
-                ["MIDI", "flash"],
-                ["LOW", "steps"],
-                ["R", "reset"]
-            ]
-        },
         sea: {
             title: "Sea",
             items: [
@@ -305,6 +302,28 @@ async function main() {
                 ["Right X", "wave freq"],
                 ["Left Y", "camera"],
                 ["Build", "atmosphere"],
+                ["MIDI", "burst"],
+                ["R", "reset"]
+            ]
+        },
+        coyote: {
+            title: "CoyoteFractal",
+            items: [
+                ["Right X", "yaw"],
+                ["Left Y", "pitch"],
+                ["Right pinch", "chaos"],
+                ["Right speed", "detail"],
+                ["Build", "drive"],
+                ["MIDI", "burst"],
+                ["R", "reset"]
+            ]
+        },
+        nikos: {
+            title: "NikosMarch",
+            items: [
+                ["Right Y", "speed"],
+                ["Right speed", "steps"],
+                ["Build", "storm"],
                 ["MIDI", "burst"],
                 ["R", "reset"]
             ]
@@ -318,18 +337,6 @@ async function main() {
                 ["Right speed", "iters"],
                 ["Build", "contrast"],
                 ["R", "reset"]
-            ]
-        },
-        rd: {
-            title: "ReactionDiffusion",
-            items: [
-                ["Right X", "feed"],
-                ["Right Y", "kill"],
-                ["Pinch", "paint"],
-                ["Build", "speed"],
-                ["MIDI", "agitate"],
-                ["LOW", "res"],
-                ["R", "reseed"]
             ]
         },
         quasi: {

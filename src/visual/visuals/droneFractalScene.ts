@@ -13,6 +13,10 @@ export class DroneFractalScene {
   private t = 0;
   private safeMode = false;
 
+  private gestureLatched = false;
+  private gestureAnchor = new THREE.Vector2(0.5, 0.5);
+  private gestureOffset = new THREE.Vector2(0.0, 0.0);
+
   private baseW = 4.2;
   private baseH = 2.4;
 
@@ -122,6 +126,9 @@ export class DroneFractalScene {
 
   reset() {
     this.t = 0;
+    this.gestureLatched = false;
+    this.gestureAnchor.set(0.5, 0.5);
+    this.gestureOffset.set(0, 0);
   }
 
   update(control: ControlState) {
@@ -131,11 +138,35 @@ export class DroneFractalScene {
     const my = clamp01(control.rightY);
     const md = clamp01(control.rightPinch);
 
+    // While pinching, treat hand motion as relative to a captured center,
+    // so the fractal stays centered and doesn't drift due to absolute mapping.
+    const pinchOn = md > 0.25;
+    if (pinchOn && !this.gestureLatched) {
+      this.gestureLatched = true;
+      this.gestureAnchor.set(mx, my);
+    } else if (!pinchOn) {
+      this.gestureLatched = false;
+    }
+
+    const dt = control.dt;
+    const follow = pinchOn ? 10.0 : 3.0;
+    const k = 1.0 - Math.exp(-follow * dt);
+
+    // Desired offset: during pinch, pan relative to the anchor; otherwise recenter.
+    const dx = pinchOn ? (mx - this.gestureAnchor.x) : 0.0;
+    const dy = pinchOn ? (my - this.gestureAnchor.y) : 0.0;
+    this.gestureOffset.x += (dx - this.gestureOffset.x) * k;
+    this.gestureOffset.y += (dy - this.gestureOffset.y) * k;
+
+    // Recenter around mid screen + offset.
+    const cx = 0.5 + this.gestureOffset.x;
+    const cy = 0.5 + this.gestureOffset.y;
+
     const w = this.mat.uniforms.uRes.value.x as number;
     const h = this.mat.uniforms.uRes.value.y as number;
 
     this.mat.uniforms.uTime.value = this.t;
-    this.mat.uniforms.uMouse.value.set(mx * w, my * h, md);
+    this.mat.uniforms.uMouse.value.set(clamp01(cx) * w, clamp01(cy) * h, md);
     this.mat.uniforms.uBuild.value = clamp01(control.build);
 
     if (!this.safeMode) {

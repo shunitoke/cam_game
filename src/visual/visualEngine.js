@@ -1,12 +1,9 @@
 import * as THREE from "three";
 import { ParticlesScene } from "./visuals/particlesScene";
 import { GeometryScene } from "./visuals/geometryScene";
-import { PlasmaScene } from "./visuals/plasmaScene";
 import { DomainWarpScene } from "./visuals/domainWarpScene";
 import { CellularScene } from "./visuals/cellularScene";
-import { RaymarchTunnelScene } from "./visuals/raymarchTunnelScene";
 import { DroneFractalScene } from "./visuals/droneFractalScene";
-import { ReactionDiffusionScene } from "./visuals/reactionDiffusionScene";
 import { WaveLabScene } from "./visuals/waveLabScene";
 import { PhysicsScene } from "./visuals/physicsScene";
 import { AsciiScene } from "./visuals/asciiScene";
@@ -21,6 +18,10 @@ import { BosWarpScene } from "./visuals/bosWarpScene";
 import { KaleidoscopeScene } from "./visuals/kaleidoscopeScene";
 import { MetaballsScene } from "./visuals/metaballsScene";
 import { SeaScene } from "./visuals/seaScene";
+import { CabinetScene } from "./visuals/cabinetScene";
+import { LogPolarLatticeScene } from "./visuals/logPolarLatticeScene";
+import { CoyoteFractalFlightScene } from "./visuals/coyoteFractalFlightScene";
+import { NikosTunnelMarchScene } from "./visuals/nikosTunnelMarchScene";
 export class VisualEngine {
     canvas;
     renderer;
@@ -219,12 +220,11 @@ export class VisualEngine {
         this.postScene.add(this.postQuad);
         const particles = new ParticlesScene();
         const geo = new GeometryScene();
-        const plasma = new PlasmaScene();
         const warp = new DomainWarpScene();
         const cellular = new CellularScene();
-        const tunnel = new RaymarchTunnelScene();
+        const cabinet = new CabinetScene();
+        const logPolar = new LogPolarLatticeScene();
         const drone = new DroneFractalScene();
-        const rd = new ReactionDiffusionScene();
         const wave = new WaveLabScene();
         const phys = new PhysicsScene();
         const quasi = new QuasicrystalsScene();
@@ -239,8 +239,10 @@ export class VisualEngine {
         const kalei = new KaleidoscopeScene();
         const metaballs = new MetaballsScene();
         const sea = new SeaScene();
+        const coyote = new CoyoteFractalFlightScene();
+        const nikos = new NikosTunnelMarchScene();
         // Some scenes need access to the WebGLRenderer (ping-pong simulation, etc.).
-        for (const sc of [particles, geo, plasma, warp, cellular, tunnel, sea, drone, rd, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
+        for (const sc of [particles, geo, cabinet, logPolar, warp, cellular, sea, coyote, nikos, drone, wave, phys, quasi, ascii, bif, lloyd, rrt, arbor, koch, dla, bosWarp, kalei, metaballs]) {
             if (typeof sc.setRenderer === "function") {
                 sc.setRenderer(this.renderer);
             }
@@ -248,14 +250,15 @@ export class VisualEngine {
         this.scenes = [
             { def: { id: "particles", name: "Particles" }, scene: particles },
             { def: { id: "geometry", name: "Geometry" }, scene: geo },
-            { def: { id: "plasma", name: "Plasma" }, scene: plasma },
             { def: { id: "warp", name: "DomainWarp" }, scene: warp },
             { def: { id: "cellular", name: "Cellular" }, scene: cellular },
-            { def: { id: "tunnel", name: "Tunnel" }, scene: tunnel },
             { def: { id: "sea", name: "Sea" }, scene: sea },
+            { def: { id: "cabinet", name: "Cabinet" }, scene: cabinet },
+            { def: { id: "logPolar", name: "LogPolar" }, scene: logPolar },
+            { def: { id: "coyote", name: "CoyoteFractal" }, scene: coyote },
+            { def: { id: "nikos", name: "NikosMarch" }, scene: nikos },
             { def: { id: "drone", name: "Drone" }, scene: drone },
             { def: { id: "quasi", name: "Quasicrystals" }, scene: quasi },
-            { def: { id: "rd", name: "ReactionDiffusion" }, scene: rd },
             { def: { id: "dla", name: "DLA" }, scene: dla },
             { def: { id: "bif", name: "Bifurcation" }, scene: bif },
             { def: { id: "wavelab", name: "WaveLab" }, scene: wave },
