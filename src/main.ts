@@ -183,11 +183,7 @@ async function main() {
         "- Left X: tempo\n" +
         "- Right Y: drum tone\n" +
         "- Right pinch: FX drive\n" +
-        "- Left pinch: pad gate\n" +
-        "- Key 45: Pad lift / brightness\n" +
-        "- Key 46: Perc roll boost\n" +
-        "- Key 47: FX sweep + burst\n" +
-        "- Hands: autopilot";
+        "- Left pinch: pad gate";
     }
   };
 
