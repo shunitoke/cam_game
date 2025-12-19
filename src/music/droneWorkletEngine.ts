@@ -978,7 +978,7 @@ export class DroneWorkletEngine {
     this.started = true;
 
     // Seed drone guitar auto-swell scheduler.
-    this.droneGtrNextSwellT = ctx.currentTime + 3.0;
+    this.droneGtrNextSwellT = ctx.currentTime + 1.5;
     this.droneGtrSwellUntilT = 0;
     this.droneGtrAuto = 0;
     this.droneGtrAutoTarget = 0;
@@ -1475,7 +1475,7 @@ export class DroneWorkletEngine {
                   // Subtle amplitude (scaled down by idleAmt below).
                   this.droneGtrAutoTarget = 0.10 + 0.16 * this.rand01();
 
-                  const gap = 6.0 + 18.0 * this.rand01();
+                  const gap = 3.0 + 9.0 * this.rand01();
                   this.droneGtrNextSwellT = t + len + gap;
                 }
                 if (t >= this.droneGtrSwellUntilT) {
