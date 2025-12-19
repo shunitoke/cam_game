@@ -90,27 +90,28 @@ Scene-specific visual controls are shown in the in-app **Hints** panel (per scen
 ## Scenes
 
 - **Scene 1: Particles**
-- **Scene 2: Geometry tunnel/grid**
-- **Scene 3: Plasma**
-- **Scene 4: DomainWarp**
-- **Scene 5: Cellular**
-- **Scene 6: Tunnel**
-- **Scene 7: Sea**
-- **Scene 8: Drone**
-- **Scene 9: Quasicrystals**
-- **Scene 10: ReactionDiffusion**
-- **Scene 11: DLA**
-- **Scene 12: Bifurcation**
-- **Scene 13: WaveLab (per-voice waveforms + timbre morph)**
-- **Scene 14: Physics (springs/cloth)**
-- **Scene 15: Lloyd**
-- **Scene 16: RRT**
-- **Scene 17: Arboretum**
-- **Scene 18: Koch**
-- **Scene 19: BoS Warp (fBm + domain warping)**
-- **Scene 20: Kaleidoscope**
-- **Scene 21: Metaballs**
-- **Scene 22: ASCII**
+- **Scene 2: Geometry**
+- **Scene 3: DomainWarp**
+- **Scene 4: Cellular**
+- **Scene 5: Sea**
+- **Scene 6: Cabinet**
+- **Scene 7: LogPolar**
+- **Scene 8: CoyoteFractal**
+- **Scene 9: NikosMarch**
+- **Scene 10: Drone**
+- **Scene 11: Quasicrystals**
+- **Scene 12: DLA**
+- **Scene 13: Bifurcation**
+- **Scene 14: WaveLab (per-voice waveforms + timbre morph)**
+- **Scene 15: Physics (springs/cloth)**
+- **Scene 16: Lloyd**
+- **Scene 17: RRT**
+- **Scene 18: Arboretum**
+- **Scene 19: Koch**
+- **Scene 20: BoS Warp (fBm + domain warping)**
+- **Scene 21: Kaleidoscope**
+- **Scene 22: Metaballs**
+- **Scene 23: ASCII**
 
 ### ASCII scene (camera silhouette)
 
