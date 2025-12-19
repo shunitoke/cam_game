@@ -136,9 +136,9 @@ export class WaveLabScene {
         const yScale = clamp01((h - 420) / 520) * 0.45 + 0.50;
         const yOffset = (1 - yScale) * 0.55;
         const energy = clamp01((control.leftX + control.leftY) * 0.5 + control.build * 0.7);
-        const baseGain = 0.10 + energy * 0.22 + this.burst * 0.10;
+        const baseGain = 0.05 + energy * 0.14 + this.burst * 0.05;
         const dt = Math.min(0.033, control.dt);
-        const envAlpha = 1 - Math.exp(-dt * 18);
+        const envAlpha = 1 - Math.exp(-dt * 10);
         for (let i = 0; i < 7; i++) {
             const w = waves[i];
             const g = this.geoms[i];
@@ -160,11 +160,11 @@ export class WaveLabScene {
                 }
             }
             const rms = count ? Math.sqrt(sumSq / count) : 0;
-            const targetEnv = clamp01(Math.max(peak, rms * 1.8));
+            const targetEnv = clamp01(Math.max(peak * 0.7, rms * 1.2));
             this.laneEnv[i] = this.laneEnv[i] + (targetEnv - this.laneEnv[i]) * envAlpha;
             const env = this.laneEnv[i];
             const by = this.baseY[i] ?? 0;
-            const yy = by * yScale + yOffset + env * 0.10;
+            const yy = by * yScale + yOffset + env * 0.05;
             if (this.lines[i])
                 this.lines[i].position.y = yy;
             const lbl = this.labels[i];
@@ -172,7 +172,7 @@ export class WaveLabScene {
                 lbl.sprite.position.y = yy;
             const pts = g.getAttribute("position").array;
             const len = Math.min(256, w?.length ?? 0);
-            const laneGain = baseGain * (1.0 + env * 6.5);
+            const laneGain = baseGain * (0.7 + env * 3.2);
             for (let s = 0; s < 256; s++) {
                 const x = (s / 255) * 2.8 - 1.4;
                 const v = s < len && w ? w[s] : 0;

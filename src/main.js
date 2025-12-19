@@ -5,6 +5,7 @@ import { VisualEngine } from "./visual/visualEngine";
 import { HandOverlay2D } from "./visual/handOverlay2d";
 import { MidiInput } from "./midi/midiInput";
 const BPM_DEFAULT = 132;
+let uiHidden = false;
 function el(tag, className) {
     const node = document.createElement(tag);
     if (className)
@@ -73,6 +74,10 @@ async function main() {
     const stopBtn = el("button");
     stopBtn.textContent = "Stop";
     stopBtn.disabled = true;
+    const hideUiBtn = el("button");
+    hideUiBtn.textContent = "HIDE UI";
+    hideUiBtn.title = "Hide/show all controls";
+    hideUiBtn.disabled = true;
     const prevBtn = el("button");
     prevBtn.textContent = "PREV";
     prevBtn.title = "Previous Scene";
@@ -81,10 +86,11 @@ async function main() {
     nextBtn.textContent = "NEXT";
     nextBtn.title = "Next Scene";
     nextBtn.disabled = true;
-    const overlayBtn = el("button");
-    overlayBtn.textContent = "HANDS: ON";
-    overlayBtn.title = "Hand overlay";
-    overlayBtn.disabled = true;
+    const camBtn = el("button");
+    camBtn.textContent = "CAM: ON";
+    camBtn.title = "Toggle camera tracking";
+    camBtn.disabled = true;
+    let camOn = true;
     let overlayOn = true;
     const autoplayBtn = el("button");
     autoplayBtn.title = "Automatically switch scenes (RAVE mode only)";
@@ -165,8 +171,8 @@ async function main() {
                 "Gestures (RAVE)\n" +
                     "- Left X: tempo\n" +
                     "- Right Y: drum tone\n" +
-                    "- Right pinch: hats\n" +
-                    "- Both hands: build\n";
+                    "- Right pinch: FX drive\n" +
+                    "- Left pinch: pad gate";
         }
     };
     let noHandsSinceMs = null;
@@ -181,10 +187,9 @@ async function main() {
     const modeBtn = el("button");
     modeBtn.textContent = "MODE: RAVE";
     controlsRow.appendChild(modeBtn);
-    controlsRow.appendChild(prevBtn);
-    controlsRow.appendChild(nextBtn);
-    controlsRow.appendChild(sceneBadge);
-    togglesRow.appendChild(overlayBtn);
+    togglesRow.appendChild(prevBtn);
+    togglesRow.appendChild(nextBtn);
+    togglesRow.appendChild(camBtn);
     togglesRow.appendChild(autoplayBtn);
     panel.appendChild(controlsRow);
     panel.appendChild(togglesRow);
@@ -194,6 +199,17 @@ async function main() {
     ui.appendChild(panel);
     document.body.appendChild(ui);
     document.body.appendChild(hud);
+    // Floating dock for UI toggle (stays visible when UI hidden)
+    const uiDock = el("div");
+    uiDock.style.position = "fixed";
+    uiDock.style.top = "10px";
+    uiDock.style.right = "10px";
+    uiDock.style.zIndex = "10001";
+    uiDock.style.display = "flex";
+    uiDock.style.gap = "8px";
+    uiDock.style.pointerEvents = "auto";
+    uiDock.appendChild(hideUiBtn);
+    document.body.appendChild(uiDock);
     const videoWrap = el("div", "videoPreview");
     const video = el("video");
     video.autoplay = true;
@@ -218,8 +234,12 @@ async function main() {
     midiOverlay.appendChild(midiOverlayMap);
     const midiOverlayLegend = el("div", "midiOverlayLegend");
     midiOverlayLegend.innerHTML = `
-    <div class="midiLegendRow"><b>One-octave performance</b> (36–47): KICK, SNARE, HAT, CLAP, PERC, BASS, STAB, LEAD, PAD (hold), FILL (hit), GEN toggle (hit), FX (burst + hit)</div>
-  `;
+    <div class="midiLegendRow">
+      <b>One-octave performance</b> (36–47):
+      36 KICK · 37 SNARE · 38 HAT · 39 CLAP · 40 RIM ·
+      41 BASS · 42 PAD · 43 LEAD · 44 PAD ·
+      45 PAD LIFT · 46 PERC ROLL · 47 FX SWEEP/BURST
+    </div>`;
     midiOverlay.appendChild(midiOverlayLegend);
     document.body.appendChild(midiOverlay);
     const camSpan = status.querySelector("#cam");
@@ -695,6 +715,37 @@ async function main() {
     let beatViz = 0;
     let lastAudioVizAt = 0;
     let lastAudioViz = null;
+    const applyAudioMode = (mode, options = {}) => {
+        const prevMode = audioMode;
+        audioMode = mode;
+        modeBtn.textContent = mode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
+        updateGestureHint(mode);
+        audio?.setMode(mode);
+        const shouldResetScene = options.forceScene || prevMode !== mode;
+        if (mode === "drone") {
+            if (shouldResetScene) {
+                const s = visuals.setScene("drone");
+                sceneBadge.textContent = `Scene: ${s.name}`;
+                renderHints(s.id, s.name);
+                audio?.setScene(s.id);
+            }
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+        }
+        else {
+            if (shouldResetScene) {
+                const s = visuals.setScene("particles");
+                sceneBadge.textContent = `Scene: ${s.name}`;
+                renderHints(s.id, s.name);
+                audio?.setScene(s.id);
+            }
+            prevBtn.disabled = !running;
+            nextBtn.disabled = !running;
+        }
+        if (shouldResetScene) {
+            lastAutoSceneAt = performance.now();
+        }
+    };
     let stallScore = 0;
     let lastAutoTrackerRestartAt = 0;
     let severeStallScore = 0;
@@ -929,7 +980,7 @@ async function main() {
                 midiSpan.textContent = `on(${midiStatus.inputs})`;
                 midiSpan.title = `Inputs: ${midiStatus.names.join(", ")}`;
             }
-            const overlayOnNow = running;
+            const overlayOnNow = running && !uiHidden;
             if (overlayOnNow !== midiOverlayWasOn) {
                 midiOverlayWasOn = overlayOnNow;
                 midiOverlay.style.display = overlayOnNow ? "block" : "none";
@@ -1015,12 +1066,15 @@ async function main() {
                                 midiVel.set(note, Math.max(midiVel.get(note) ?? 0, clamp01(lvl)));
                             }
                         };
-                        hit("kick", 36, 0.05);
-                        hit("snare", 37, 0.03);
-                        hit("hat", 38, 0.02);
-                        hit("clap", 39, 0.03);
-                        hit("rim", 40, 0.02);
-                        hit("openhat", 47, 0.02);
+                        hit("kick", 36, 0);
+                        hit("snare", 37, 0);
+                        hit("hat", 38, 0);
+                        hit("clap", 39, 0);
+                        hit("rim", 40, 0);
+                        hit("openhat", 47, 0);
+                        hit("pad", 42, 0);
+                        hit("pad", 44, 0);
+                        hit("lead", 43, 0);
                     }
                 }
                 catch {
@@ -1088,44 +1142,72 @@ async function main() {
             }
             const vizT1 = performance.now();
             tVizMs = ema(tVizMs, vizT1 - vizT0, 0.12);
-            // Flash overlay keys based on actual audio output (auto-generated track), not only MIDI input.
-            // Uses lastAudioViz which is already throttled.
-            if (midiOverlayWasOn && audioViz) {
-                const peakAbs = (arr) => {
-                    if (!arr || !arr.length)
-                        return 0;
-                    const n = Math.min(256, arr.length);
-                    let p = 0;
-                    for (let i = 0; i < n; i += 4) {
-                        const v = Math.abs(arr[i] ?? 0);
-                        if (v > p)
-                            p = v;
+            const controlWithViz = control;
+            // Drone-mode interface tremble + random key flicker based on overload intensity.
+            const resetDroneGlitch = () => {
+                ui.style.transform = "";
+                hud.style.transform = "";
+                midiOverlay.style.transform = "";
+                midiOverlay.style.filter = "";
+                for (const key of midiKeyEls.values()) {
+                    key.style.boxShadow = "";
+                    key.style.filter = "";
+                    key.style.transform = "";
+                }
+            };
+            if (audioMode === "drone" && audioViz) {
+                const pinch = clamp01(controlWithViz?.rightPinch ?? 0);
+                const wave = audioViz.kick;
+                let rms = 0;
+                if (wave && wave.length) {
+                    const n = Math.min(256, wave.length);
+                    let sum = 0;
+                    for (let i = 0; i < n; i += 2) {
+                        const v = wave[i] ?? 0;
+                        sum += v * v;
                     }
-                    return p;
-                };
-                const kickP = peakAbs(audioViz.kick);
-                const hatP = peakAbs(audioViz.hat);
-                const bassP = peakAbs(audioViz.bass);
-                const stabP = peakAbs(audioViz.stab);
-                const leadP = peakAbs(audioViz.lead);
-                const padP = peakAbs(audioViz.pad);
-                const flash = (note, p, thr) => {
-                    if (p <= thr)
-                        return;
-                    const v = clamp01((p - thr) / Math.max(1e-6, 1 - thr));
-                    midiFlashT.set(note, t);
-                    midiVel.set(note, Math.max(midiVel.get(note) ?? 0, v));
-                };
-                flash(36, kickP, 0.10);
-                flash(38, hatP, 0.06);
-                flash(41, bassP, 0.07);
-                flash(42, stabP, 0.06);
-                flash(43, leadP, 0.04);
-                flash(44, padP, 0.03);
+                    rms = Math.sqrt(sum / Math.max(1, n / 2));
+                }
+                const baseIntensity = 0.1 + pinch * 0.2;
+                const intensity = Math.min(1, Math.max(baseIntensity, rms * 14 * (1 + pinch * 0.6)));
+                const jiggle = intensity > 0.02;
+                const shake = intensity * 18 * (1 + pinch * 0.8);
+                const rot = intensity * 3.4 * (1 + pinch * 0.6);
+                const spread = 1 + intensity * 0.04 + pinch * 0.05;
+                const dx = jiggle ? (Math.random() - 0.5) * shake : 0;
+                const dy = jiggle ? (Math.random() - 0.5) * shake : 0;
+                ui.style.transform = jiggle ? `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${spread})` : "";
+                hud.style.transform = jiggle
+                    ? `translate(${dx * 0.7}px, ${dy * 0.7}px) rotate(${rot * 0.6}deg) scale(${1 + intensity * 0.02})`
+                    : "";
+                // Keyboard tilts opposite direction for contrast and stretches outward.
+                const kDx = jiggle ? -dx * (1.1 + pinch * 0.2) : 0;
+                const kDy = jiggle ? dy * (0.9 + pinch * 0.2) : 0;
+                midiOverlay.style.transform = jiggle
+                    ? `translate(${kDx}px, ${kDy}px) rotate(${-rot * 1.2}deg) scale(${1 + intensity * 0.05 + pinch * 0.05})`
+                    : "";
+                midiOverlay.style.filter = jiggle ? `contrast(${1 + intensity * 1.5}) saturate(${1 + intensity})` : "";
+                const flashChance = Math.min(0.95, intensity * 0.9 + 0.05);
+                const glow = `0 0 ${10 + intensity * 25}px rgba(255,150,60,${0.4 + 0.5 * intensity})`;
+                for (const key of midiKeyEls.values()) {
+                    const active = Math.random() < flashChance;
+                    const flicker = active ? 1 + intensity + pinch * 0.5 : 0.4 + intensity * 0.6;
+                    const hueShift = active ? 40 + intensity * 60 + pinch * 80 : 32;
+                    key.style.boxShadow = active ? glow : "0 0 6px rgba(200,120,40,0.35)";
+                    key.style.filter = `brightness(${flicker}) contrast(${1.0 + intensity * 0.4}) hue-rotate(${hueShift}deg)`;
+                    key.style.opacity = String(0.35 + intensity * 0.6);
+                    key.style.transform = active
+                        ? `rotate(${(Math.random() - 0.5) * rot * 2}deg) scale(${1 + pinch * 0.3})`
+                        : `scale(${1 + pinch * 0.1})`;
+                }
             }
+            else {
+                resetDroneGlitch();
+            }
+            // In RAVE, rely on actual instrument triggers (handled earlier via getActivity). No extra auto flashes here.
             const beatPulse = audio?.getPulse?.() ?? 0;
             if (audioViz) {
-                control.audioViz = audioViz;
+                controlWithViz.audioViz = audioViz;
                 const kick = audioViz.kick;
                 let peak = 0;
                 if (kick && kick.length) {
@@ -1140,28 +1222,21 @@ async function main() {
                 let low = 0;
                 if (fft && fft.length) {
                     const bins = Math.min(24, fft.length);
-                    let sum = 0;
+                    let acc = 0;
                     for (let i = 0; i < bins; i++) {
-                        const db = fft[i] ?? -120;
-                        const m = Math.min(1, Math.max(0, (db + 120) / 120));
-                        sum += m;
+                        acc += Math.max(-120, fft[i] ?? -120);
                     }
-                    low = bins ? sum / bins : 0;
+                    low = acc / Math.max(1, bins);
                 }
                 const target = Math.min(1, Math.max(peak * 3.5, low * 1.25));
                 const dt = Math.min(0.033, control.dt ?? 0.016);
                 const a = 1 - Math.exp(-dt * 26);
                 beatViz = beatViz + (target - beatViz) * a;
                 beatViz = Math.max(0, beatViz - dt * 1.75);
-            }
-            else {
                 beatViz = Math.max(0, beatViz - control.dt * 1.75);
             }
             const bpOut = Math.max(beatPulse, beatViz);
             control.beatPulse = bpOut;
-            if (running)
-                audSpan.title = `beat: ${bpOut.toFixed(3)}`;
-            const controlWithViz = control;
             lastControlForAudio = controlWithViz;
             const sceneDelta = controlWithViz.events.sceneDelta;
             if (sceneDelta !== 0) {
@@ -1211,7 +1286,7 @@ async function main() {
         }
     });
     const renderHud = () => {
-        if (!hudOn) {
+        if (!hudOn || uiHidden) {
             hud.style.display = "none";
             return;
         }
@@ -1257,7 +1332,7 @@ async function main() {
                 `\nkeys: Ctrl/Alt + H HUD  C cam  I inf  V viz  G gpu  A aud  P reload  R reset`;
     };
     const renderHudMeter = () => {
-        if (!hudOn)
+        if (!hudOn || uiHidden)
             return;
         if (!audioVizOn)
             return;
@@ -1432,7 +1507,7 @@ async function main() {
             const a = audio;
             if (!a)
                 throw new Error("AudioEngine not initialized");
-            a.setMode(audioMode);
+            applyAudioMode(audioMode, { forceScene: true });
             try {
                 await a.start();
             }
@@ -1442,19 +1517,20 @@ async function main() {
             }
             audSpan.textContent = "on";
         }
-        catch (e) {
+        catch (err) {
             audSpan.textContent = "error";
             const extra = typeof audio?.getLastError === "function" ? String(audio.getLastError() ?? "") : "";
-            audSpan.title = `Audio error: ${errMsg(e)}${extra ? `\nEngine: ${extra}` : ""}`;
+            audSpan.title = `Audio error: ${errMsg(err)}${extra ? `\nEngine: ${extra}` : ""}`;
+            console.error(err);
             startBtn.disabled = false;
-            startBtn.textContent = "Enter Performance";
             return;
         }
         running = true;
         stopBtn.disabled = false;
         prevBtn.disabled = false;
         nextBtn.disabled = false;
-        overlayBtn.disabled = false;
+        camBtn.disabled = false;
+        hideUiBtn.disabled = false;
         autoplayBtn.disabled = false;
         startBtn.textContent = "Enter Performance";
         lastT = performance.now();
@@ -1492,7 +1568,8 @@ async function main() {
         stopBtn.disabled = true;
         prevBtn.disabled = true;
         nextBtn.disabled = true;
-        overlayBtn.disabled = true;
+        camBtn.disabled = true;
+        hideUiBtn.disabled = true;
         autoplayBtn.disabled = true;
         if (audioUpdateTimer !== null) {
             try {
@@ -1529,28 +1606,8 @@ async function main() {
         void stop().catch((e) => console.error(e));
     });
     modeBtn.addEventListener("click", () => {
-        audioMode = audioMode === "drone" ? "performance" : "drone";
-        modeBtn.textContent = audioMode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
-        updateGestureHint(audioMode);
-        audio?.setMode(audioMode);
-        if (audioMode === "drone") {
-            const s = visuals.setScene("drone");
-            sceneBadge.textContent = `Scene: ${s.name}`;
-            renderHints(s.id, s.name);
-            audio?.setScene(s.id);
-            prevBtn.disabled = true;
-            nextBtn.disabled = true;
-        }
-        else {
-            // Leaving DRONE: always jump to the first rave scene.
-            const s = visuals.setScene("particles");
-            sceneBadge.textContent = `Scene: ${s.name}`;
-            renderHints(s.id, s.name);
-            audio?.setScene(s.id);
-            prevBtn.disabled = !running;
-            nextBtn.disabled = !running;
-        }
-        lastAutoSceneAt = performance.now();
+        const nextMode = audioMode === "drone" ? "performance" : "drone";
+        applyAudioMode(nextMode, { forceScene: true });
     });
     prevBtn.addEventListener("click", () => {
         applySceneDelta(-1);
@@ -1558,11 +1615,52 @@ async function main() {
     nextBtn.addEventListener("click", () => {
         applySceneDelta(1);
     });
-    overlayBtn.addEventListener("click", () => {
-        overlayOn = !overlayOn;
-        overlayBtn.textContent = overlayOn ? "HANDS: ON" : "HANDS: OFF";
-        overlay.setEnabled(overlayOn);
-        tracker.setWantLandmarks(overlayOn);
+    const setUiHidden = (hidden) => {
+        uiHidden = hidden;
+        // Main panels (top/left), MIDI keyboard (bottom/right), HUD (bottom/left).
+        ui.style.display = hidden ? "none" : "block";
+        midiOverlay.style.display = hidden ? "none" : (midiOverlayWasOn ? "block" : "none");
+        hud.style.display = hidden ? "none" : (hudOn ? "block" : "none");
+    };
+    hideUiBtn.addEventListener("click", () => {
+        setUiHidden(!uiHidden);
+        hideUiBtn.textContent = uiHidden ? "SHOW UI" : "HIDE UI";
+    });
+    camBtn.addEventListener("click", () => {
+        camOn = !camOn;
+        camBtn.textContent = camOn ? "CAM: ON" : "CAM: OFF";
+        if (!camOn) {
+            try {
+                tracker.stop();
+                video.srcObject = null;
+                video.pause();
+            }
+            catch {
+            }
+            try {
+                videoWrap.style.display = "none";
+            }
+            catch { }
+            camSpan.textContent = "off";
+            handsSpan.textContent = "0";
+            tracker.setWantLandmarks(false);
+        }
+        else {
+            camSpan.textContent = "starting";
+            void tracker
+                .start(video)
+                .then(() => {
+                camSpan.textContent = "on";
+                videoWrap.style.display = "block";
+                tracker.setWantLandmarks(true);
+            })
+                .catch((err) => {
+                camOn = false;
+                camBtn.textContent = "CAM: OFF";
+                camSpan.textContent = "error";
+                camSpan.title = `Camera error: ${errMsg(err)}`;
+            });
+        }
     });
     autoplayBtn.addEventListener("click", () => {
         setAutoplayOn(!autoplayOn);
@@ -1649,7 +1747,7 @@ async function main() {
                 }
                 else {
                     audSpan.textContent = "starting";
-                    audio.setMode(audioMode);
+                    applyAudioMode(audioMode);
                     audio.setSafeMode(false);
                     void audio.start();
                     audSpan.textContent = "on";

@@ -32,6 +32,12 @@ export class DroneWorkletEngine {
     analyser = null;
     waveBuf = null;
     fftBuf = null;
+    waveKick = null;
+    waveHat = null;
+    waveBass = null;
+    waveStab = null;
+    waveLead = null;
+    wavePad = null;
     // RAVE samples
     samplesLoaded = false;
     loadingSamples = null;
@@ -104,7 +110,9 @@ export class DroneWorkletEngine {
         clap: 0,
         snare: 0,
         rim: 0,
-        openhat: 0
+        openhat: 0,
+        pad: 0,
+        lead: 0
     };
     sampleActivityLevel = {
         kick: 0,
@@ -112,10 +120,169 @@ export class DroneWorkletEngine {
         clap: 0,
         snare: 0,
         rim: 0,
-        openhat: 0
+        openhat: 0,
+        pad: 0,
+        lead: 0
     };
+    padGate = 0;
+    padGain = 0;
+    padFreq = 220;
+    padBright = 0.5;
+    padDetune = 0.01;
+    leadGain = 0;
+    leadFreq = 440;
+    leadBright = 0.5;
+    leadProb = 0;
+    leadBaseHz = 440;
+    padEnv = 0;
+    leadEnv = 0;
+    padDrive = null;
+    padFilter = null;
+    padBus = null;
+    padOscs = [];
+    padTargetAmp = 0;
+    padAmp = 0;
+    padNextBar = 0;
+    padBaseHz = 110;
+    leadDrive = null;
+    leadFilter = null;
+    leadBus = null;
+    leadLastStep = -1;
+    arrangementStage = 0;
+    raveTotalBars = 0;
+    stageKickBar = 4;
+    stageSynthBar = 8;
+    breakdownActive = false;
+    breakdownUntilBar = 0;
+    nextBreakdownBar = 12;
+    breakdownSpanBars = 4;
+    breakdownLevel = 0;
+    flowScene = 0;
+    sceneHatBoost = 1;
+    scenePercBoost = 1;
+    sceneLeadBoost = 1;
+    scenePitchMultiplier = 1.0;
+    sceneFxBoost = 0;
+    scenePadBrightBoost = 0;
+    harmonyChords = [
+        // Scene 0: D# minor (D#3 – A#3, lead F#4)
+        { padLow: 51, padHigh: 58, lead: 66 },
+        // Scene 1: G# minor (G#3 – D#4, lead C#5)
+        { padLow: 56, padHigh: 63, lead: 73 },
+        // Scene 2: C# major (C#3 – G#3, lead E4)
+        { padLow: 49, padHigh: 56, lead: 64 },
+        // Scene 3: B major sus (B2 – F#3, lead D#4)
+        { padLow: 47, padHigh: 54, lead: 63 }
+    ];
+    macroPadLiftDurationMs = 8000;
+    macroPercBoostDurationMs = 6000;
+    macroFxBlastDurationMs = 5500;
+    macroPadLiftUntilMs = 0;
+    macroPercBoostUntilMs = 0;
+    macroFxBlastUntilMs = 0;
+    macroPadLiftLevel = 0;
+    macroPercBoostLevel = 0;
+    macroFxBlastLevel = 0;
+    resetArrangementStages() {
+        this.arrangementStage = 0;
+        this.raveTotalBars = 0;
+        this.breakdownActive = false;
+        this.breakdownUntilBar = 0;
+        this.nextBreakdownBar = 12;
+        this.breakdownSpanBars = 4;
+        this.breakdownLevel = 0;
+        this.applyFlowScene(0);
+    }
+    applyFlowScene(scene) {
+        this.flowScene = scene;
+        const harmony = this.harmonyChords[scene] ?? this.harmonyChords[0];
+        this.padBaseHz = midiToHz(harmony.padLow);
+        this.leadBaseHz = midiToHz(harmony.lead);
+        if (scene === 0) {
+            this.sceneHatBoost = 0.5;
+            this.scenePercBoost = 0.3;
+            this.sceneLeadBoost = 0.25;
+            this.scenePadBrightBoost = -0.1;
+            this.sceneFxBoost = 0.1;
+            this.scenePitchMultiplier = 1.0;
+        }
+        else if (scene === 1) {
+            this.sceneHatBoost = 1;
+            this.scenePercBoost = 0.8;
+            this.sceneLeadBoost = 0.6;
+            this.scenePadBrightBoost = 0;
+            this.sceneFxBoost = 0.2;
+            this.scenePitchMultiplier = 0.75;
+        }
+        else if (scene === 2) {
+            this.sceneHatBoost = 1.3;
+            this.scenePercBoost = 1.1;
+            this.sceneLeadBoost = 1.2;
+            this.scenePadBrightBoost = 0.2;
+            this.sceneFxBoost = 0.4;
+            this.scenePitchMultiplier = 0.5;
+        }
+        else {
+            this.sceneHatBoost = 0.9;
+            this.scenePercBoost = 0.7;
+            this.sceneLeadBoost = 1.0;
+            this.scenePadBrightBoost = 0.3;
+            this.sceneFxBoost = 0.65;
+            this.scenePitchMultiplier = 0.67;
+        }
+    }
+    updateArrangementStageProgress() {
+        if (this.arrangementStage === 0 && this.raveTotalBars >= this.stageKickBar) {
+            this.arrangementStage = 1;
+            this.applyFlowScene(1);
+        }
+        if (this.arrangementStage === 1 && this.raveTotalBars >= this.stageSynthBar) {
+            this.arrangementStage = 2;
+            this.applyFlowScene(2);
+        }
+        if (this.arrangementStage >= 2 && this.raveTotalBars % 16 === 0) {
+            const nextScene = ((this.flowScene + 1) % 4);
+            this.applyFlowScene(nextScene);
+        }
+    }
+    stageMix(targetStage, fadeBars) {
+        if (this.arrangementStage < targetStage)
+            return 0;
+        if (this.arrangementStage > targetStage)
+            return 1;
+        const start = targetStage <= 1 ? this.stageKickBar : targetStage === 2 ? this.stageSynthBar : this.stageSynthBar;
+        const barsSince = Math.max(0, this.raveTotalBars - start);
+        return clamp(barsSince / Math.max(1, fadeBars), 0, 1);
+    }
+    updateBreakdownState(bar) {
+        if (this.breakdownActive && bar >= this.breakdownUntilBar) {
+            this.breakdownActive = false;
+            this.nextBreakdownBar = bar + 12 + Math.floor(this.rand01() * 10);
+        }
+        if (!this.breakdownActive && this.arrangementStage >= 1 && bar >= this.nextBreakdownBar) {
+            this.breakdownActive = true;
+            this.breakdownSpanBars = this.rand01() < 0.45 ? 6 : 4;
+            this.breakdownUntilBar = bar + this.breakdownSpanBars;
+        }
+    }
+    drumSat = null;
+    triggerMacroPadLift(strength) {
+        const nowMs = performance.now();
+        const extra = this.macroPadLiftDurationMs * (0.4 + 0.6 * strength);
+        this.macroPadLiftUntilMs = Math.max(this.macroPadLiftUntilMs, nowMs) + extra;
+    }
+    triggerMacroPercBoost(strength) {
+        const nowMs = performance.now();
+        const extra = this.macroPercBoostDurationMs * (0.45 + 0.55 * strength);
+        this.macroPercBoostUntilMs = Math.max(this.macroPercBoostUntilMs, nowMs) + extra;
+    }
+    triggerMacroFxBlast(strength) {
+        const nowMs = performance.now();
+        const extra = this.macroFxBlastDurationMs * (0.5 + 0.5 * strength);
+        this.macroFxBlastUntilMs = Math.max(this.macroFxBlastUntilMs, nowMs) + extra;
+    }
     markSample(name, gain) {
-        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        const now = performance.now();
         this.sampleActivityAtMs[name] = now;
         const prev = this.sampleActivityLevel[name] ?? 0;
         const g = Math.max(0, Math.min(1, gain));
@@ -208,11 +375,12 @@ export class DroneWorkletEngine {
         const r = this.rand01();
         const nextLen = r < 0.20 ? 32 : r < 0.75 ? 16 : 8;
         this.raveNextSectionBar = bar + nextLen;
-        const fillChance = 0.12 + 0.08 * (this.raveSection === 2 ? 1 : 0);
+        const fillChance = 0.18 + 0.10 * (this.raveSection === 2 ? 1 : 0);
         if (this.raveFillUntilBar <= bar && this.rand01() < fillChance) {
             const rr = this.rand01();
-            this.raveFillType = rr < 0.62 ? 1 : rr < 0.92 ? 2 : 3;
-            this.raveFillUntilBar = bar + 1;
+            this.raveFillType = rr < 0.52 ? 1 : rr < 0.82 ? 2 : 3;
+            const len = this.raveFillType === 3 ? 2 : 1;
+            this.raveFillUntilBar = bar + len;
         }
         else {
             this.raveFillType = 0;
@@ -239,6 +407,11 @@ export class DroneWorkletEngine {
     lastRumbleLp = 0;
     lastRumbleHp = 0;
     idleAmt = 0;
+    // MIDI synth override (pad/lead) for performance mode when keys not mapped to drums
+    midiNote = null;
+    midiVel = 0;
+    midiPadNote = null;
+    midiLeadNote = null;
     lastDroneRate = 1;
     lastDroneRateA = 1;
     lastBassDriveAmt = -1;
@@ -522,7 +695,7 @@ export class DroneWorkletEngine {
         this.raveBar = 0;
         this.raveSection = 0;
         this.ravePrevSection = 0;
-        this.raveNextSectionBar = 8;
+        this.raveNextSectionBar = 4;
         this.raveSectionChangeT = ctx.currentTime;
         this.raveFillType = 0;
         this.raveFillUntilBar = 0;
@@ -536,15 +709,19 @@ export class DroneWorkletEngine {
         const tick = () => {
             if (!this.ctx)
                 return;
-            if (this.mode !== "performance")
-                return;
-            if (!this.samplesLoaded)
-                return;
-            if (!this.sampleKick || !this.sampleHat)
+            if (!this.started)
                 return;
             const now = this.ctx.currentTime;
-            const lookahead = 0.35;
-            const secPerStep = (60 / Math.max(1e-6, this.raveBpm)) / 4; // 16ths
+            // In drone mode, don't run the RAVE scheduler or mark drum activity (avoids kick light).
+            if (this.mode !== "performance") {
+                this.raveNextStepT = now;
+                this.raveStep = 0;
+                this.raveBar = 0;
+                return;
+            }
+            const bpm = this.raveBpm;
+            const secPerStep = 60 / Math.max(1e-6, bpm) / 4;
+            const lookahead = 0.12;
             // Catch up if we stalled.
             if (this.raveNextStepT < now - 0.05) {
                 const missed = Math.floor((now - this.raveNextStepT) / secPerStep);
@@ -558,11 +735,15 @@ export class DroneWorkletEngine {
                     const dens = Math.min(1, Math.max(0, this.lastRightPinch));
                     const fillOn = this.raveFillUntilBar > this.raveBar;
                     this.maybeAdvanceBarVariant(this.raveBar, this.raveSection, dens, fillOn);
+                    this.updateBreakdownState(this.raveBar);
                 }
                 this.scheduleRaveStep(this.raveNextStepT, this.raveStep);
                 this.raveStep = (this.raveStep + 1) & 15;
-                if (this.raveStep === 0)
+                if (this.raveStep === 0) {
                     this.raveBar++;
+                    this.raveTotalBars++;
+                    this.updateArrangementStageProgress();
+                }
                 this.raveNextStepT += secPerStep;
             }
         };
@@ -585,18 +766,18 @@ export class DroneWorkletEngine {
         }
         this.raveTimer = null;
     }
-    fireSample(time, buffer, gain, rate = 1) {
+    fireSample(time, buffer, gain = 1.0, playbackRate = 1.0) {
         if (!this.ctx)
             return;
-        if (!this.drumGain)
-            return;
-        const src = this.ctx.createBufferSource();
+        const ctx = this.ctx;
+        const src = ctx.createBufferSource();
         src.buffer = buffer;
-        src.playbackRate.value = rate;
+        src.playbackRate.value = playbackRate;
         const g = this.ctx.createGain();
         g.gain.value = Math.max(0, gain);
         src.connect(g);
-        g.connect(this.drumGain);
+        if (this.drumGain)
+            g.connect(this.drumGain);
         src.start(time);
         src.stop(time + Math.min(2.0, buffer.duration + 0.1));
     }
@@ -616,13 +797,15 @@ export class DroneWorkletEngine {
         src.buffer = this.sampleKick;
         src.playbackRate.value = 1.0;
         const gMain = ctx.createGain();
-        gMain.gain.value = Math.max(0, gain);
+        gMain.gain.value = Math.max(0, gain * 0.85);
         const gSend = ctx.createGain();
-        gSend.gain.value = 0.65;
+        gSend.gain.value = 0.45;
         src.connect(gMain);
         src.connect(gSend);
-        gMain.connect(this.drumGain);
-        gSend.connect(this.rumbleSend);
+        if (this.drumGain)
+            gMain.connect(this.drumGain);
+        if (this.rumbleSend)
+            gSend.connect(this.rumbleSend);
         // Duck rumble on kick
         try {
             const p = this.rumbleOut.gain;
@@ -642,6 +825,17 @@ export class DroneWorkletEngine {
         // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
         // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
         const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+        const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
+        const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
+        const introSlope = clamp(this.raveTotalBars / Math.max(1, this.stageKickBar), 0, 1);
+        const kickMix = Math.min(1, this.stageMix(1, 4) + introSlope * 0.5);
+        const hatMix = Math.min(1, kickMix * hatBoost);
+        const percMix = clamp((kickMix - 0.25) / 0.75, 0, 1) * percBoost;
+        const triggerKick = (when, gain) => {
+            if (kickMix <= 0.02)
+                return;
+            this.fireKick(when, gain * kickMix);
+        };
         const bar = this.raveBar;
         const section = this.raveSection;
         const fillOn = this.raveFillUntilBar > bar;
@@ -683,96 +877,122 @@ export class DroneWorkletEngine {
         const fillHat = fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
         const fillRim = fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
         if (kickAllowed && kick) {
-            this.fireKick(time, 1.0);
+            triggerKick(time, 1.0);
         }
-        if (!fillOn) {
+        const inBreak = this.breakdownActive;
+        if (!fillOn && !inBreak) {
             if (groove === 1) {
                 if (kickAllowed && step === 7 && section >= 1 && dens > 0.25)
-                    this.fireKick(time, 0.16);
+                    triggerKick(time, 0.16);
                 if (kickAllowed && step === 15 && section >= 2 && dens > 0.45)
-                    this.fireKick(time, 0.14);
+                    triggerKick(time, 0.14);
             }
             if (groove === 2) {
                 if (kickAllowed && step === 3 && section >= 2 && dens > 0.55)
-                    this.fireKick(time, 0.15);
+                    triggerKick(time, 0.15);
             }
             if (groove === 3) {
                 if (kickAllowed && step === 11 && section >= 1 && dens > 0.40)
-                    this.fireKick(time, 0.12);
+                    triggerKick(time, 0.12);
             }
         }
         // Occasional pre-push only at phrase end
         if (kickAllowed && fillOn && step === 15 && this.raveFillType === 3) {
-            this.fireKick(time, 0.22);
+            triggerKick(time, 0.22);
         }
         // Hats
-        if (offHat && this.sampleHat) {
-            const v = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
-            this.markSample("hat", v);
-            this.fireSample(time, this.sampleHat, v, 1.02);
-        }
-        if (!fillOn && this.sampleHat) {
-            const ghostOn = (section >= 1 && dens > 0.25) || (section >= 2 && dens > 0.12);
-            if (ghostOn) {
-                const micro = step === 6 || step === 14 ? 0.006 : 0.0;
-                if (groove === 1 && (step === 9 || step === 13)) {
-                    this.markSample("hat", 0.055 + 0.045 * dens);
-                    this.fireSample(time + micro, this.sampleHat, 0.055 + 0.045 * dens, 1.10);
-                }
-                if (groove === 3 && step === 5) {
-                    this.markSample("hat", 0.050 + 0.040 * dens);
-                    this.fireSample(time + micro, this.sampleHat, 0.050 + 0.040 * dens, 1.08);
-                }
-            }
-        }
-        // 16th hats come in gradually and with pinch
-        if (hat16 && this.sampleHat) {
-            const on = (section >= 1 && dens > 0.35) || (section >= 2 && dens > 0.22);
-            if (on) {
-                const v = 0.045 + 0.085 * dens;
-                const r = 1.05 + 0.03 * section;
+        const hatBreakMix = inBreak ? hatMix * 0.6 : hatMix;
+        const percBreakMix = inBreak ? percMix * 0.55 : percMix;
+        if (offHat && this.sampleHat && hatBreakMix > 0.02) {
+            // Base velocity with RNG variation
+            const baseV = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
+            const v = (baseV + (this.rand01() - 0.5) * 0.04) * hatBreakMix; // ±0.02 variation
+            const r = 0.98 + this.rand01() * 0.06; // 0.98–1.04 pitch variation
+            if (v > 0.001) {
                 this.markSample("hat", v);
                 this.fireSample(time, this.sampleHat, v, r);
             }
         }
+        if (!fillOn && this.sampleHat && hatBreakMix > 0.02 && !inBreak) {
+            const ghostOn = (section >= 1 && dens > 0.25) || (section >= 2 && dens > 0.12);
+            if (ghostOn) {
+                const micro = step === 6 || step === 14 ? 0.006 : 0.0;
+                if (groove === 1 && (step === 9 || step === 13)) {
+                    const v = (0.055 + 0.045 * dens + (this.rand01() - 0.5) * 0.03) * hatMix;
+                    const r = 1.06 + this.rand01() * 0.08;
+                    if (v > 0.001) {
+                        this.markSample("hat", v);
+                        this.fireSample(time + micro, this.sampleHat, v, r);
+                    }
+                }
+                if (groove === 3 && step === 5) {
+                    const v = (0.050 + 0.040 * dens + (this.rand01() - 0.5) * 0.03) * hatMix;
+                    const r = 1.04 + this.rand01() * 0.08;
+                    if (v > 0.001) {
+                        this.markSample("hat", v);
+                        this.fireSample(time + micro, this.sampleHat, v, r);
+                    }
+                }
+            }
+        }
+        // 16th hats come in gradually and with pinch
+        if (hat16 && this.sampleHat && hatBreakMix > 0.02) {
+            const on = (section >= 1 && dens > 0.35) || (section >= 2 && dens > 0.22);
+            if (on) {
+                const v = (0.045 + 0.085 * dens + (this.rand01() - 0.5) * 0.04) * hatBreakMix;
+                const r = 1.03 + 0.03 * section + this.rand01() * 0.05;
+                if (v > 0.001) {
+                    this.markSample("hat", v);
+                    this.fireSample(time, this.sampleHat, v, r);
+                }
+            }
+        }
         // Open hat on the offbeat when density rises
-        if (openHat && this.sampleOpenHat) {
+        if (openHat && this.sampleOpenHat && !inBreak) {
             const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
-            if (section >= 2 && m > 0.06) {
-                this.markSample("openhat", 0.06 + 0.12 * m);
-                this.fireSample(time, this.sampleOpenHat, 0.06 + 0.12 * m, 1.0);
+            if (section >= 2 && m > 0.06 && hatMix > 0.02) {
+                const v = (0.06 + 0.12 * m + (this.rand01() - 0.5) * 0.05) * hatMix;
+                const r = 0.96 + this.rand01() * 0.08;
+                if (v > 0.001) {
+                    this.markSample("openhat", v);
+                    this.fireSample(time, this.sampleOpenHat, v, r);
+                }
             }
         }
         // Rim/snare: keep it minimal, no clap
-        if (rim && this.sampleRim) {
+        if (rim && this.sampleRim && percBreakMix > 0.02) {
             if (section >= 1 && dens > 0.15) {
-                this.markSample("rim", 0.08 + 0.10 * dens);
-                this.fireSample(time, this.sampleRim, 0.08 + 0.10 * dens, 1.0);
+                const v = (0.08 + 0.10 * dens) * percBreakMix;
+                this.markSample("rim", v);
+                this.fireSample(time, this.sampleRim, v, 1.0);
             }
         }
-        if (snare && this.sampleSnare) {
+        if (snare && this.sampleSnare && percBreakMix > 0.02) {
             // snare comes in later (avoid pop/party clap vibe)
             if (section >= 1) {
-                const v = (section === 1 ? 0.11 : 0.14) + 0.14 * dens;
+                const v = ((section === 1 ? 0.11 : 0.14) + 0.14 * dens) * percBreakMix;
                 this.markSample("snare", v);
                 this.fireSample(time + 0.004, this.sampleSnare, v, 1.0);
             }
         }
-        if (!fillOn && this.sampleSnare && groove === 2 && section >= 2 && dens > 0.35) {
+        if (!fillOn && this.sampleSnare && groove === 2 && section >= 2 && dens > 0.35 && percBreakMix > 0.02) {
             if (step === 11) {
-                this.markSample("snare", 0.06 + 0.05 * dens);
-                this.fireSample(time + 0.002, this.sampleSnare, 0.06 + 0.05 * dens, 1.0);
+                const v = (0.06 + 0.05 * dens) * percBreakMix;
+                this.markSample("snare", v);
+                this.fireSample(time + 0.002, this.sampleSnare, v, 1.0);
             }
         }
         // Fills
-        if (fillHat && this.sampleHat) {
+        if (fillHat && this.sampleHat && hatBreakMix > 0.02) {
             const rr = this.raveFillType === 3 ? 1.18 : 1.14;
-            this.markSample("hat", 0.12);
-            this.fireSample(time, this.sampleHat, 0.12, rr);
+            const v = 0.12 * hatBreakMix;
+            this.markSample("hat", v);
+            this.fireSample(time, this.sampleHat, v, rr);
         }
-        if (fillRim && this.sampleRim) {
-            this.markSample("rim", 0.12);
-            this.fireSample(time, this.sampleRim, 0.12, 1.0);
+        if (fillRim && this.sampleRim && percMix > 0.02) {
+            const v = 0.12 * percMix;
+            this.markSample("rim", v);
+            this.fireSample(time, this.sampleRim, v, 1.0);
         }
     }
     async start() {
@@ -780,16 +1000,44 @@ export class DroneWorkletEngine {
             return;
         const ctx = new AudioContext({ latencyHint: "playback" });
         this.ctx = ctx;
-        // Worklet module: Vite will serve/compile this URL.
-        await ctx.audioWorklet.addModule(new URL("./worklets/droneProcessor.js", import.meta.url));
+        this.resetArrangementStages();
+        // Worklet module: prefer TS in dev (hot reload) and fall back to bundled JS for hosted builds.
+        const workletUrl = (ext) => new URL(`./worklets/droneProcessor.${ext}`, import.meta.url);
+        const primaryExt = import.meta.env.DEV ? "ts" : "js";
+        const fallbackExt = primaryExt === "ts" ? "js" : "ts";
+        let loaded = false;
+        let addErr = null;
+        for (const ext of [primaryExt, fallbackExt]) {
+            if (loaded)
+                break;
+            try {
+                await ctx.audioWorklet.addModule(workletUrl(ext));
+                loaded = true;
+            }
+            catch (err) {
+                addErr = err;
+            }
+        }
+        if (!loaded) {
+            throw new Error(`Failed to load drone worklet (tried .${primaryExt} and .${fallbackExt}): ${addErr}`);
+        }
         const node = new AudioWorkletNode(ctx, "drone-processor", {
             numberOfInputs: 0,
             numberOfOutputs: 1,
             outputChannelCount: [2]
         });
         this.node = node;
+        node.port.onmessage = (ev) => {
+            const data = ev.data;
+            if (!data || typeof data !== "object")
+                return;
+            if (data.type === "activity" && typeof data.name === "string") {
+                const level = Number(data.level ?? 0);
+                this.markSample(data.name, clamp(level, 0, 1));
+            }
+        };
         const master = ctx.createGain();
-        master.gain.value = 0.55;
+        master.gain.value = 0.48;
         this.master = master;
         this.limiter = ctx.createDynamicsCompressor();
         this.limiter.threshold.value = -16;
@@ -892,7 +1140,7 @@ export class DroneWorkletEngine {
         }
         this.started = true;
         // Seed drone guitar auto-swell scheduler.
-        this.droneGtrNextSwellT = ctx.currentTime + 3.0;
+        this.droneGtrNextSwellT = ctx.currentTime + 1.5;
         this.droneGtrSwellUntilT = 0;
         this.droneGtrAuto = 0;
         this.droneGtrAutoTarget = 0;
@@ -945,6 +1193,7 @@ export class DroneWorkletEngine {
             return;
         this.stopRaveScheduler();
         this.stopDroneStems();
+        this.resetArrangementStages();
         try {
             this.node?.disconnect();
         }
@@ -1046,16 +1295,29 @@ export class DroneWorkletEngine {
         if (now - this.lastParamsSentAt < 33)
             return;
         this.lastParamsSentAt = now;
-        // Base pitch: either held MIDI note, or left hand X.
-        // In RAVE (performance) we don't want keyboard notes to detune the whole track,
-        // so only apply MIDI pitch when in drone mode.
-        const baseHz = this.mode === "drone" && this.currentMidi != null
-            ? midiToHz(this.currentMidi)
-            : expRange01(control.leftX, 55, 220);
-        // Brightness: right hand Y (in ControlBus Y is already flipped)
+        const nowMs = now;
+        const macroStep = (current, target) => {
+            const rate = target > current ? 0.32 : 0.08;
+            return current + (target - current) * rate;
+        };
+        const padLiftTarget = nowMs < this.macroPadLiftUntilMs ? 1 : 0;
+        const percBoostTarget = nowMs < this.macroPercBoostUntilMs ? 1 : 0;
+        const fxBlastTarget = nowMs < this.macroFxBlastUntilMs ? 1 : 0;
+        this.macroPadLiftLevel = macroStep(this.macroPadLiftLevel, padLiftTarget);
+        this.macroPercBoostLevel = macroStep(this.macroPercBoostLevel, percBoostTarget);
+        this.macroFxBlastLevel = macroStep(this.macroFxBlastLevel, fxBlastTarget);
+        // Base pitch: In DRONE mode allow left-hand/midi to shift pitch; in RAVE keep fixed.
+        const baseHz = this.mode === "drone"
+            ? this.currentMidi != null
+                ? midiToHz(this.currentMidi)
+                : expRange01(control.leftX, 55, 220)
+            : this.padBaseHz;
         const cutoff = expRange01(control.rightY, 120, 6200);
-        // Drive/texture: build + right pinch
-        const drive = clamp(0.1 + control.build * 1.25 + control.rightPinch * 0.6, 0, 2.2);
+        const fxBoost = this.sceneFxBoost + this.macroFxBlastLevel * 0.9;
+        const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
+        const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
+        // Drive/texture: build + right pinch + FX macros
+        const drive = clamp(0.1 + control.build * 1.25 + control.rightPinch * 0.6 + fxBoost * 0.6, 0, 2.4);
         // LFO
         const lfoHz = expRange01(control.rightX, 0.05, 3.2);
         const lfoAmt = clamp(0.015 + control.leftPinch * 0.28, 0, 0.65);
@@ -1063,14 +1325,16 @@ export class DroneWorkletEngine {
         const attack = expRange01(1 - control.leftY, 0.006, 0.18);
         const release = expRange01(1 - control.leftY, 0.06, 0.9);
         const detune = clamp(0.0015 + control.build * 0.008 + control.rightSpeed * 0.004, 0, 0.02);
-        const sub = clamp(0.12 + control.build * 0.55, 0, 0.85);
-        const noiseRaw = clamp(0.01 + control.rightPinch * 0.08, 0, 0.2);
-        const noise = this.mode === "drone" ? 0 : noiseRaw;
+        const sub = clamp(0.12 + control.build * 0.55 + this.macroPadLiftLevel * 0.2, 0, 0.95);
+        const noiseRaw = clamp(0.01 + control.rightPinch * 0.08 + fxBoost * 0.05, 0, 0.25);
+        const baseHzMod = this.mode === "drone" ? 0 : noiseRaw;
         // Delay as space: right pinch opens mix, build increases feedback.
         const delayTime = expRange01(control.rightX, 0.09, 0.42);
         const delayFb = clamp(0.18 + control.build * 0.55, 0, 0.86);
         const delayMixRaw = clamp(0.03 + control.rightPinch * 0.22, 0, 0.35);
-        const delayMix = this.mode === "drone" ? 0.08 + 0.12 * clamp(control.build, 0, 1) : delayMixRaw;
+        const delayMix = this.mode === "drone"
+            ? 0.08 + 0.12 * clamp(control.build, 0, 1)
+            : clamp(delayMixRaw + fxBoost * 0.15, 0, 0.65);
         const rPinchRaw = clamp(control.rightPinch, 0, 1);
         const rPinch = rPinchRaw <= 0.30 ? 0 : clamp((rPinchRaw - 0.30) / 0.70, 0, 1);
         // Rhythm (worklet stepper): slow pulse you can "wake up" with build.
@@ -1082,6 +1346,61 @@ export class DroneWorkletEngine {
         const tickAmt = this.mode === "drone" ? 0 : tickAmtRaw;
         const tickDecay = expRange01(1 - control.rightY, 0.01, 0.11);
         const tickTone = expRange01(control.rightY, 400, 5200);
+        const synthStage = this.stageMix(2, 4);
+        // Pad/lead controls (performance mode only). MIDI override for 42/43/44.
+        if (this.mode === "performance") {
+            const midiPadOn = this.midiPadNote != null;
+            const midiLeadOn = this.midiLeadNote != null;
+            const scenePitch = this.scenePitchMultiplier;
+            if (midiPadOn) {
+                // map note 42/44 to pad
+                const n = this.midiPadNote;
+                this.padGain = 0.55;
+                this.padGate = 1;
+                this.padFreq = midiToHz(n);
+                this.padBright = 0.65;
+                this.padDetune = 0.012;
+            }
+            else {
+                const padBrightBase = clamp(control.rightY + this.scenePadBrightBoost, 0, 1);
+                const padBright = clamp(padBrightBase + this.macroPadLiftLevel * 0.25, 0, 1);
+                const padLevelBase = clamp((0.18 + control.build * 0.35) * synthStage, 0, 0.65);
+                const padLevel = Math.min(0.9, padLevelBase * (1 + this.macroPadLiftLevel * 0.7));
+                const padGate = 1;
+                const padFreq = baseHz * scenePitch * (1.2 + this.macroPadLiftLevel * 0.3);
+                const padDetune = clamp(0.004 + control.leftPinch * 0.012, 0, 0.04);
+                this.padGain = padLevel;
+                this.padGate = padGate;
+                this.padFreq = padFreq;
+                this.padBright = padBright;
+                this.padDetune = padDetune;
+            }
+            if (midiLeadOn) {
+                const n = this.midiLeadNote;
+                this.leadGain = 0.5;
+                this.leadFreq = midiToHz(n + 12); // lift an octave for lead
+                this.leadBright = 0.70;
+                this.leadProb = 1;
+            }
+            else {
+                const leadLevelBase = clamp((0.12 + control.build * 0.28) * synthStage * this.sceneLeadBoost, 0, 0.6);
+                const leadLevel = clamp(leadLevelBase * (1 + this.macroPadLiftLevel * 0.35), 0, 0.65);
+                const leadFreq = this.leadBaseHz * scenePitch;
+                const leadBright = clamp(control.rightY, 0, 1);
+                const leadProb = clamp((0.08 + control.build * 0.28 + this.rand01() * 0.04) * (1 + this.macroPadLiftLevel * 0.4), 0, 0.85);
+                this.leadGain = leadLevel;
+                this.leadFreq = leadFreq;
+                this.leadBright = leadBright;
+                this.leadProb = leadProb;
+            }
+        }
+        else {
+            // In drone mode, keep pad/lead quiet.
+            this.padGain = 0;
+            this.padGate = 0;
+            this.leadGain = 0;
+            this.leadProb = 0;
+        }
         // Guitar (right hand): pinch = pluck trigger, X = pitch, Y = brightness
         const guitarFreq = expRange01(control.rightX, 82, 392);
         const guitarBright = clamp(control.rightY, 0, 1);
@@ -1369,7 +1688,7 @@ export class DroneWorkletEngine {
                                     this.droneGtrSwellUntilT = t + len;
                                     // Subtle amplitude (scaled down by idleAmt below).
                                     this.droneGtrAutoTarget = 0.10 + 0.16 * this.rand01();
-                                    const gap = 6.0 + 18.0 * this.rand01();
+                                    const gap = 3.0 + 9.0 * this.rand01();
                                     this.droneGtrNextSwellT = t + len + gap;
                                 }
                                 if (t >= this.droneGtrSwellUntilT) {
@@ -1441,7 +1760,7 @@ export class DroneWorkletEngine {
         const haveGtr = !!this.sampleDroneGuitar;
         const muteWorklet = this.mode === "drone" && haveBass && haveGtr;
         const workletGain = muteWorklet ? 0 : 1.0;
-        this.node.port.postMessage({
+        const params = {
             type: "params",
             mode: this.mode,
             freq: baseHz,
@@ -1454,7 +1773,7 @@ export class DroneWorkletEngine {
             release,
             detune,
             sub,
-            noise,
+            noise: noiseRaw,
             delayTime,
             delayFb,
             delayMix,
@@ -1464,11 +1783,21 @@ export class DroneWorkletEngine {
             tickAmt,
             tickDecay,
             tickTone,
+            padFreq: this.padFreq,
+            padGain: this.padGain,
+            padBright: this.padBright,
+            padGate: this.padGate,
+            padDetune: this.padDetune,
+            leadFreq: this.leadFreq,
+            leadGain: this.leadGain,
+            leadBright: this.leadBright,
+            leadProb: this.leadProb,
             guitarFreq,
             guitarPluck: pluck,
             guitarBright,
             guitarGate
-        });
+        };
+        this.node.port.postMessage(params);
         this.node.port.postMessage({ type: "gate", gate });
     }
     update(control) {
@@ -1477,7 +1806,7 @@ export class DroneWorkletEngine {
     handleMidi(events) {
         if (!events.length)
             return;
-        // In RAVE mode, use keys/MIDI to trigger the 909 kit (one-shots).
+        // In performance, map drums AND let other notes drive pad/lead.
         if (this.mode === "performance" && this.ctx) {
             void this.ensureSamplesLoaded();
             const t = this.ctx.currentTime + 0.02;
@@ -1511,16 +1840,59 @@ export class DroneWorkletEngine {
                     this.markSample("openhat", 0.22 * vel);
                     this.fireSample(t, this.sampleOpenHat, 0.22 * vel, 1.0);
                 }
+                if (e.note === 45) {
+                    this.triggerMacroPadLift(v);
+                }
+                if (e.note === 46) {
+                    this.triggerMacroPercBoost(v);
+                    if (this.sampleClap) {
+                        const rollCount = 3 + Math.floor(this.rand01() * 3);
+                        for (let i = 0; i < rollCount; i++) {
+                            const dt = 0.02 * i;
+                            this.markSample("clap", 0.25 * vel);
+                            this.fireSample(t + dt, this.sampleClap, 0.25 * vel, 1.08 + 0.01 * i);
+                        }
+                    }
+                }
+                if (e.note === 47) {
+                    this.triggerMacroFxBlast(v);
+                }
+                // Pad/lead MIDI: 42/44 -> pad, 43 -> lead
+                if (e.note === 42 || e.note === 44) {
+                    this.midiPadNote = e.note;
+                    this.midiVel = v;
+                }
+                else if (e.note === 43) {
+                    this.midiLeadNote = e.note;
+                    this.midiVel = v;
+                }
             }
-            return;
         }
         for (const e of events) {
             if (e.type === "noteon") {
-                this.currentMidi = e.note;
-                this.gate = Math.max(this.gate, clamp(e.velocity, 0, 1));
+                if (this.mode === "performance") {
+                    this.midiNote = e.note;
+                    this.midiVel = clamp(e.velocity, 0, 1);
+                    this.gate = Math.max(this.gate, this.midiVel);
+                }
+                else {
+                    this.currentMidi = e.note;
+                    this.gate = Math.max(this.gate, clamp(e.velocity, 0, 1));
+                }
             }
             if (e.type === "noteoff") {
-                if (this.currentMidi === e.note) {
+                if (this.mode === "performance") {
+                    if (this.midiNote === e.note) {
+                        this.midiNote = null;
+                        this.midiVel = 0;
+                        this.gate = 0;
+                    }
+                    if (e.note === this.midiPadNote)
+                        this.midiPadNote = null;
+                    if (e.note === this.midiLeadNote)
+                        this.midiLeadNote = null;
+                }
+                else if (this.currentMidi === e.note) {
                     this.currentMidi = null;
                     this.gate = 0;
                 }
@@ -1545,6 +1917,18 @@ export class DroneWorkletEngine {
         if (!this.waveBuf || this.waveBuf.length !== 256) {
             this.waveBuf = new Float32Array(256);
         }
+        if (!this.waveKick || this.waveKick.length !== 256)
+            this.waveKick = new Float32Array(256);
+        if (!this.waveHat || this.waveHat.length !== 256)
+            this.waveHat = new Float32Array(256);
+        if (!this.waveBass || this.waveBass.length !== 256)
+            this.waveBass = new Float32Array(256);
+        if (!this.waveStab || this.waveStab.length !== 256)
+            this.waveStab = new Float32Array(256);
+        if (!this.waveLead || this.waveLead.length !== 256)
+            this.waveLead = new Float32Array(256);
+        if (!this.wavePad || this.wavePad.length !== 256)
+            this.wavePad = new Float32Array(256);
         try {
             this.analyser.getFloatFrequencyData(this.fftBuf);
             this.analyser.getFloatTimeDomainData(this.waveBuf);
@@ -1552,9 +1936,54 @@ export class DroneWorkletEngine {
         catch {
             return null;
         }
-        // Provide at least kick+fft so HUD meter and WaveLab have something meaningful.
+        // Split main mix into pseudo-stems by filtering.
+        const split = (src, dst, lowHz, highHz, mix) => {
+            let prev = 0;
+            const sr = this.ctx?.sampleRate ?? 48000;
+            const dt = 1 / Math.max(1, sr);
+            const rcLow = lowHz > 0 ? 1 / (2 * Math.PI * lowHz) : 0;
+            const rcHigh = highHz > 0 ? 1 / (2 * Math.PI * highHz) : 0;
+            const alphaHP = rcLow > 0 ? rcLow / (rcLow + dt) : 0;
+            const alphaLP = rcHigh > 0 ? dt / (rcHigh + dt) : 1;
+            let hp = 0;
+            let lp = 0;
+            for (let i = 0; i < dst.length; i++) {
+                const s = src[i] ?? 0;
+                let v = s;
+                if (lowHz > 0) {
+                    hp = alphaHP * (hp + v - prev);
+                    v = hp;
+                }
+                if (highHz > 0 && highHz < 20000) {
+                    lp = lp + alphaLP * (v - lp);
+                    v = lp;
+                }
+                prev = s;
+                dst[i] = v * mix;
+            }
+        };
+        split(this.waveBuf, this.waveKick, 40, 180, 1.0);
+        split(this.waveBuf, this.waveHat, 1800, 0, 0.9);
+        split(this.waveBuf, this.waveBass, 60, 320, 0.85);
+        split(this.waveBuf, this.waveStab, 320, 1600, 0.8);
+        split(this.waveBuf, this.waveLead, 900, 4200, 0.75);
+        split(this.waveBuf, this.wavePad, 220, 1400, 0.7);
+        if (this.padEnv > 1e-3 && this.padGain > 1e-3) {
+            const lvl = Math.min(1, this.padEnv * this.padGain * 0.85);
+            this.markSample("pad", lvl);
+        }
+        if (this.leadEnv > 1e-3 && this.leadGain > 1e-3) {
+            const lvl = Math.min(1, this.leadEnv * this.leadGain * 0.9);
+            this.markSample("lead", lvl);
+        }
         return {
-            kick: this.waveBuf,
+            mode: this.mode,
+            kick: this.waveKick,
+            hat: this.waveHat,
+            bass: this.waveBass,
+            stab: this.waveStab,
+            lead: this.waveLead,
+            pad: this.wavePad,
             fft: this.fftBuf
         };
     }

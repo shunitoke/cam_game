@@ -160,6 +160,7 @@ export class DroneWorkletEngine {
   private leadFreq = 440;
   private leadBright = 0.5;
   private leadProb = 0;
+  private leadBaseHz = 440;
 
   private padEnv = 0;
   private leadEnv = 0;
@@ -190,8 +191,19 @@ export class DroneWorkletEngine {
   private sceneHatBoost = 1;
   private scenePercBoost = 1;
   private sceneLeadBoost = 1;
-  private scenePadBrightBoost = 0;
+  private scenePitchMultiplier = 1.0;
   private sceneFxBoost = 0;
+  private scenePadBrightBoost = 0;
+  private readonly harmonyChords: Array<{ padLow: number; padHigh: number; lead: number }> = [
+    // Scene 0: D# minor (D#3 – A#3, lead F#4)
+    { padLow: 51, padHigh: 58, lead: 66 },
+    // Scene 1: G# minor (G#3 – D#4, lead C#5)
+    { padLow: 56, padHigh: 63, lead: 73 },
+    // Scene 2: C# major (C#3 – G#3, lead E4)
+    { padLow: 49, padHigh: 56, lead: 64 },
+    // Scene 3: B major sus (B2 – F#3, lead D#4)
+    { padLow: 47, padHigh: 54, lead: 63 }
+  ];
   private readonly macroPadLiftDurationMs = 8000;
   private readonly macroPercBoostDurationMs = 6000;
   private readonly macroFxBlastDurationMs = 5500;
@@ -214,30 +226,37 @@ export class DroneWorkletEngine {
   }
   private applyFlowScene(scene: 0 | 1 | 2 | 3) {
     this.flowScene = scene;
+    const harmony = this.harmonyChords[scene] ?? this.harmonyChords[0]!;
+    this.padBaseHz = midiToHz(harmony.padLow);
+    this.leadBaseHz = midiToHz(harmony.lead);
     if (scene === 0) {
       this.sceneHatBoost = 0.5;
       this.scenePercBoost = 0.3;
       this.sceneLeadBoost = 0.25;
       this.scenePadBrightBoost = -0.1;
       this.sceneFxBoost = 0.1;
+      this.scenePitchMultiplier = 1.0;
     } else if (scene === 1) {
       this.sceneHatBoost = 1;
       this.scenePercBoost = 0.8;
       this.sceneLeadBoost = 0.6;
       this.scenePadBrightBoost = 0;
       this.sceneFxBoost = 0.2;
+      this.scenePitchMultiplier = 0.75;
     } else if (scene === 2) {
       this.sceneHatBoost = 1.3;
       this.scenePercBoost = 1.1;
       this.sceneLeadBoost = 1.2;
       this.scenePadBrightBoost = 0.2;
       this.sceneFxBoost = 0.4;
+      this.scenePitchMultiplier = 0.5;
     } else {
       this.sceneHatBoost = 0.9;
       this.scenePercBoost = 0.7;
       this.sceneLeadBoost = 1.0;
       this.scenePadBrightBoost = 0.3;
       this.sceneFxBoost = 0.65;
+      this.scenePitchMultiplier = 0.67;
     }
   }
 
@@ -1056,8 +1075,25 @@ export class DroneWorkletEngine {
     this.ctx = ctx;
     this.resetArrangementStages();
 
-    // Worklet module: load the TypeScript source so local + hosted builds stay in sync.
-    await ctx.audioWorklet.addModule(new URL("./worklets/droneProcessor.ts", import.meta.url));
+    // Worklet module: prefer TS in dev (hot reload) and fall back to bundled JS for hosted builds.
+    const workletUrl = (ext: "ts" | "js") => new URL(`./worklets/droneProcessor.${ext}`, import.meta.url);
+    const primaryExt: "ts" | "js" = import.meta.env.DEV ? "ts" : "js";
+    const fallbackExt: "ts" | "js" = primaryExt === "ts" ? "js" : "ts";
+
+    let loaded = false;
+    let addErr: unknown = null;
+    for (const ext of [primaryExt, fallbackExt]) {
+      if (loaded) break;
+      try {
+        await ctx.audioWorklet.addModule(workletUrl(ext));
+        loaded = true;
+      } catch (err) {
+        addErr = err;
+      }
+    }
+    if (!loaded) {
+      throw new Error(`Failed to load drone worklet (tried .${primaryExt} and .${fallbackExt}): ${addErr}`);
+    }
 
     const node = new AudioWorkletNode(ctx, "drone-processor", {
       numberOfInputs: 0,
@@ -1398,7 +1434,7 @@ export class DroneWorkletEngine {
     const detune = clamp(0.0015 + control.build * 0.008 + control.rightSpeed * 0.004, 0, 0.02);
     const sub = clamp(0.12 + control.build * 0.55 + this.macroPadLiftLevel * 0.2, 0, 0.95);
     const noiseRaw = clamp(0.01 + control.rightPinch * 0.08 + fxBoost * 0.05, 0, 0.25);
-    const noise = this.mode === "drone" ? 0 : noiseRaw;
+    const baseHzMod = this.mode === "drone" ? 0 : noiseRaw;
 
     // Delay as space: right pinch opens mix, build increases feedback.
     const delayTime = expRange01(control.rightX, 0.09, 0.42);
@@ -1429,6 +1465,7 @@ export class DroneWorkletEngine {
     if (this.mode === "performance") {
       const midiPadOn = this.midiPadNote != null;
       const midiLeadOn = this.midiLeadNote != null;
+      const scenePitch = this.scenePitchMultiplier;
 
       if (midiPadOn) {
         // map note 42/44 to pad
@@ -1444,7 +1481,7 @@ export class DroneWorkletEngine {
         const padLevelBase = clamp((0.18 + control.build * 0.35) * synthStage, 0, 0.65);
         const padLevel = Math.min(0.9, padLevelBase * (1 + this.macroPadLiftLevel * 0.7));
         const padGate = 1;
-        const padFreq = baseHz * (1.2 + this.macroPadLiftLevel * 0.3);
+        const padFreq = baseHz * scenePitch * (1.2 + this.macroPadLiftLevel * 0.3);
         const padDetune = clamp(0.004 + control.leftPinch * 0.012, 0, 0.04);
         this.padGain = padLevel;
         this.padGate = padGate;
@@ -1462,7 +1499,7 @@ export class DroneWorkletEngine {
       } else {
         const leadLevelBase = clamp((0.12 + control.build * 0.28) * synthStage * this.sceneLeadBoost, 0, 0.6);
         const leadLevel = clamp(leadLevelBase * (1 + this.macroPadLiftLevel * 0.35), 0, 0.65);
-        const leadFreq = baseHz * 2.4;
+        const leadFreq = this.leadBaseHz * scenePitch;
         const leadBright = clamp(control.rightY, 0, 1);
         const leadProb = clamp(
           (0.08 + control.build * 0.28 + this.rand01() * 0.04) * (1 + this.macroPadLiftLevel * 0.4),
@@ -1854,7 +1891,7 @@ export class DroneWorkletEngine {
       release,
       detune,
       sub,
-      noise,
+      noise: noiseRaw,
       delayTime,
       delayFb,
       delayMix,

@@ -32,6 +32,7 @@ export class VisualEngine {
     postQuad;
     postMat;
     catAmount = 0;
+    catVariation = 0;
     postTime = 0;
     safeMode = false;
     renderEnabled = true;
@@ -41,6 +42,7 @@ export class VisualEngine {
     lastInternalH = 1;
     scenes;
     sceneIndex = 0;
+    handOnlyScenes = new Set(["sea", "logPolar", "coyote", "nikos", "particles"]);
     renderFrameCount = 0;
     lastRenderAt = 0;
     constructor(canvas, opts) {
@@ -79,7 +81,8 @@ export class VisualEngine {
                 uCrt: { value: 0.85 },
                 uChromAb: { value: 0.55 },
                 uFxaa: { value: 1.0 },
-                uGain: { value: 1.18 }
+                uGain: { value: 1.18 },
+                uStatic: { value: 0.0 }
             },
             vertexShader: `
         varying vec2 vUv;
@@ -100,6 +103,7 @@ export class VisualEngine {
         uniform float uChromAb;
         uniform float uFxaa;
         uniform float uGain;
+uniform float uStatic; // TV static noise amount during transitions
 
         vec2 catMap(vec2 uv){
           // Arnold's Cat Map on [0,1) torus.
@@ -171,8 +175,12 @@ export class VisualEngine {
             cuv = catMap(cuv);
           }
 
-          // Cat map as UV warp (faster than color-mix).
+          // Cat map as UV warp (faster than color-mix), but only inside the TV screen area.
           vec2 suv = mix(uv, cuv, a);
+          // Mask: apply cat only inside the TV screen (0.05..0.95), leave borders untouched.
+          float screenMask = smoothstep(0.0, 0.05, uv.x) * smoothstep(1.0, 0.95, uv.x) *
+                           smoothstep(0.0, 0.05, uv.y) * smoothstep(1.0, 0.95, uv.y);
+          suv = mix(uv, suv, screenMask); // only warp inside screen
 
           // Global AA first.
           vec3 base = (uFxaa > 0.5) ? fxaa(suv) : tex2(suv);
@@ -207,6 +215,14 @@ export class VisualEngine {
 
           // Overall screen gain (TV brightness).
           col *= max(0.0, uGain);
+
+          // TV static noise during transitions
+          float staticAmt = uStatic;
+          if (staticAmt > 0.0) {
+            float noise = fract(sin(dot(uv * uTime, vec2(12.9898, 78.233))) * 43758.5453);
+            // Apply static only inside TV screen area (same mask as cat)
+            col = mix(col, vec3(noise), staticAmt * 0.35 * screenMask);
+          }
 
           // Clamp edges outside barrel.
           float inb = step(0.0, duv.x) * step(0.0, duv.y) * step(duv.x, 1.0) * step(duv.y, 1.0);
@@ -303,23 +319,32 @@ export class VisualEngine {
     update(control) {
         if (!this.renderEnabled)
             return;
-        const s = this.scenes[this.sceneIndex].scene;
-        s.update(control);
+        const entry = this.scenes[this.sceneIndex];
+        const sceneId = entry.def.id;
+        const controlForScene = this.handOnlyScenes.has(sceneId) ? this.stripAudioControl(control) : control;
+        entry.scene.update(controlForScene);
         this.postTime += control.dt;
         const bp = control.beatPulse ?? 0;
         this.postMat.uniforms.uChromAb.value = 0.55 + 0.25 * clamp01(bp);
         this.postMat.uniforms.uCrt.value = 0.85 + 0.10 * clamp01(bp);
-        // Decay cat transition amount.
-        this.catAmount = Math.max(0, this.catAmount - control.dt * 1.65);
+        // Decay cat transition amount faster.
+        this.catAmount = Math.max(0, this.catAmount - control.dt * 3.2);
+        // Add a small jitter to keep the cat map from feeling too static.
+        this.catVariation = Math.sin(this.postTime * 0.97) * 0.5 + Math.sin(this.postTime * 1.31) * 0.3;
         // Render scene to target first.
         this.renderer.setRenderTarget(this.rt);
-        this.renderer.render(s.getScene(), this.camera);
+        this.renderer.render(entry.scene.getScene(), this.camera);
         this.renderer.setRenderTarget(null);
         // Postprocess (cat map) to screen.
         const a = this.catAmount;
         this.postMat.uniforms.uAmount.value = a;
-        this.postMat.uniforms.uIters.value = Math.floor(lerp(0, this.safeMode ? 2 : 3, a));
+        // Variable iterations + jitter
+        const baseIters = this.safeMode ? 2 : 3;
+        const jitter = Math.floor((Math.sin(this.postTime * 0.97) + Math.sin(this.postTime * 1.31) + Math.sin(this.postTime * 2.13)) * 1.5); // -2..2
+        this.postMat.uniforms.uIters.value = Math.max(0, Math.min(8, baseIters + jitter));
         this.postMat.uniforms.uTime.value = this.postTime;
+        // TV static during transitions
+        this.postMat.uniforms.uStatic.value = a * 0.8; // scale with catAmount
         this.renderer.render(this.postScene, this.postCamera);
         this.renderFrameCount++;
         this.lastRenderAt = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -360,7 +385,9 @@ export class VisualEngine {
             s.triggerBurst(amount);
         }
         // Use bursts as brief glitch transitions.
-        this.catAmount = Math.max(this.catAmount, clamp01(amount) * 0.12);
+        this.postTime = 0;
+        this.catAmount = 0;
+        this.catVariation = 0;
     }
     onResize() {
         const w = window.innerWidth;
@@ -381,6 +408,12 @@ export class VisualEngine {
                 s.scene.onResize(this.camera);
             }
         }
+    }
+    stripAudioControl(control) {
+        const copy = { ...control };
+        copy.beatPulse = 0;
+        delete copy.audioViz;
+        return copy;
     }
 }
 function clamp01(v) {

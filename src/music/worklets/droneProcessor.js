@@ -73,45 +73,75 @@ class DroneProcessor extends AudioWorkletProcessor {
     guitarCabLP = 0;
     guitarCabNotch = 0;
     guitarLow = 0;
+    // pad (simple 2-osc detuned sine) / lead (mono saw/tri hybrid)
+    padPhase1 = 0;
+    padPhase2 = 0;
+    padPhases = [0, 0, 0, 0];
+    padChorusPhase = 0;
+    padEnv = 0;
+    padGate = 0;
+    padTarget = 0;
+    padGain = 0;
+    padFreq = 220;
+    padBright = 0.4;
+    padDetune = 0.01;
+    padLp = 0;
+    leadPhase = 0;
+    leadEnv = 0;
+    leadGate = 0;
+    leadGain = 0;
+    leadFreq = 440;
+    leadBright = 0.5;
+    leadProb = 0.0;
+    leadLp = 0;
     constructor() {
         super();
         this.port.onmessage = (ev) => {
-            const m = ev.data;
-            if (!m)
+            const msg = ev.data;
+            if (!msg)
                 return;
-            if (m.type === "params") {
-                this.mode = m.mode === "performance" ? "performance" : "drone";
-                this.freq = clamp(m.freq, 20, 2000);
-                this.targetGain = clamp(m.gain, 0, 1.0);
-                this.cutoff = clamp(m.cutoff, 40, 18000);
-                this.drive = clamp(m.drive, 0, 2.5);
-                this.lfoHz = clamp(m.lfoHz, 0, 12);
-                this.lfoAmt = clamp(m.lfoAmt, 0, 1);
-                this.attackSec = clamp(m.attack, 0.001, 2.0);
-                this.releaseSec = clamp(m.release, 0.001, 4.0);
-                this.detune = clamp(m.detune, 0, 0.02);
-                this.sub = clamp(m.sub, 0, 1);
-                this.noise = clamp(m.noise, 0, 0.5);
-                this.delayTimeSec = clamp(m.delayTime, 0, 1.5);
-                this.delayFb = clamp(m.delayFb, 0, 0.95);
-                this.delayMix = clamp(m.delayMix, 0, 1);
-                this.bpm = clamp(m.bpm, 20, 220);
-                this.pulseAmt = clamp(m.pulseAmt, 0, 1);
-                this.pulseDecaySec = clamp(m.pulseDecay, 0.005, 2.0);
-                this.tickAmt = clamp(m.tickAmt, 0, 1);
-                this.tickDecaySec = clamp(m.tickDecay, 0.002, 1.0);
-                this.tickTone = clamp(m.tickTone, 120, 12000);
-                this.guitarFreq = clamp(m.guitarFreq, 40, 900);
-                this.guitarBright = clamp(m.guitarBright, 0, 1);
-                this.guitarGate = clamp(m.guitarGate, 0, 1);
-                if (m.guitarPluck > 0.5) {
+            if (msg.type === "params") {
+                this.mode = msg.mode;
+                this.freq = msg.freq;
+                this.targetGain = msg.gain;
+                this.cutoff = clamp(msg.cutoff, 40, 18000);
+                this.drive = clamp(msg.drive, 0, 2.5);
+                this.lfoHz = clamp(msg.lfoHz, 0, 12);
+                this.lfoAmt = clamp(msg.lfoAmt, 0, 1);
+                this.attackSec = clamp(msg.attack, 0.001, 2.0);
+                this.releaseSec = clamp(msg.release, 0.001, 4.0);
+                this.detune = clamp(msg.detune, 0, 0.02);
+                this.sub = clamp(msg.sub, 0, 1);
+                this.noise = clamp(msg.noise, 0, 0.5);
+                this.delayTimeSec = clamp(msg.delayTime, 0, 1.5);
+                this.delayFb = clamp(msg.delayFb, 0, 0.95);
+                this.delayMix = clamp(msg.delayMix, 0, 1);
+                this.bpm = clamp(msg.bpm, 20, 220);
+                this.pulseAmt = clamp(msg.pulseAmt, 0, 1);
+                this.pulseDecaySec = clamp(msg.pulseDecay, 0.005, 2.0);
+                this.tickAmt = msg.tickAmt;
+                this.tickDecaySec = msg.tickDecay;
+                this.tickTone = msg.tickTone;
+                this.padFreq = msg.padFreq;
+                this.padGain = msg.padGain;
+                this.padBright = msg.padBright;
+                this.padGate = msg.padGate;
+                this.padDetune = msg.padDetune;
+                this.leadFreq = msg.leadFreq;
+                this.leadGain = msg.leadGain;
+                this.leadBright = msg.leadBright;
+                this.leadProb = msg.leadProb;
+                this.guitarFreq = msg.guitarFreq;
+                this.guitarGate = msg.guitarGate;
+                this.guitarBright = msg.guitarBright;
+                if (msg.guitarPluck > 0.5) {
                     // will be handled in process loop (ensures buffer exists with correct sr)
                     this.guitarIdx = -1;
                     this.guitarPluckEnv = 1;
                 }
             }
-            if (m.type === "gate") {
-                this.gate = clamp(m.gate, 0, 1);
+            if (msg.type === "gate") {
+                this.gate = clamp(msg.gate, 0, 1);
             }
         };
     }
@@ -236,11 +266,94 @@ class DroneProcessor extends AudioWorkletProcessor {
             this.seed ^= this.seed << 5;
             const n01 = (this.seed >>> 0) / 4294967295;
             const nz = (n01 * 2 - 1) * this.noise;
-            let x = 0.62 * tri + 0.20 * tri2 + this.sub * 0.30 * sub + nz;
-            // In RAVE (performance) mode, the worklet should not output a continuous drone bed.
-            // RAVE sound comes from the sample-based drum scheduler on the main thread.
+            let xBase = 0.62 * tri + 0.20 * tri2 + this.sub * 0.30 * sub + nz;
+            // In RAVE (performance) mode, keep the base drone bed muted, but still allow pad/lead.
+            let x = this.mode === "performance" ? 0 : xBase;
+            // --- Pad: replace failing dual-sine with polyBLEP supersaw + chorus
+            const polyBlep = (phase, dt) => {
+                if (phase < dt) {
+                    const t = phase / dt;
+                    return t + t - t * t - 1;
+                }
+                else if (phase > 1 - dt) {
+                    const t = (phase - 1) / dt;
+                    return t * t + t + t + 1;
+                }
+                return 0;
+            };
+            const effectivePadGate = this.mode === "performance" ? 1 : this.padGate;
+            this.padTarget = this.padGain * effectivePadGate;
+            const padAtk = 1 - Math.exp(-1 / (sr * 0.14));
+            const padRel = 1 - Math.exp(-1 / (sr * 0.42));
+            const padK = this.padTarget > this.padEnv ? padAtk : padRel;
+            this.padEnv += (this.padTarget - this.padEnv) * padK;
+            if (this.padGain > 1e-3 && this.padEnv > 1e-3) {
+                this.port?.postMessage({ type: "activity", name: "pad", level: this.padEnv * this.padGain });
+            }
+            // slow chorus on detune
+            this.padChorusPhase += 0.15 * invSr;
+            if (this.padChorusPhase >= 1)
+                this.padChorusPhase -= 1;
+            const chorus = 1 + 0.18 * Math.sin(this.padChorusPhase * Math.PI * 2);
+            // four detuned saws (polyBLEP)
+            const basePadDt = this.padFreq * invSr;
+            const detunes = [-1.5, -0.5, 0.5, 1.5];
+            let pad = 0;
+            for (let v = 0; v < 4; v++) {
+                const detAmt = this.padDetune * detunes[v] * chorus;
+                this.padPhases[v] += this.padFreq * (1 + detAmt) * invSr;
+                if (this.padPhases[v] >= 1)
+                    this.padPhases[v] -= 1;
+                const p = this.padPhases[v];
+                let saw = 2 * p - 1;
+                saw -= polyBlep(p, basePadDt);
+                saw += polyBlep((p + 0.5) % 1, basePadDt); // keep centered
+                pad += saw;
+            }
+            pad *= 0.25; // normalize
+            // pad brightness filter then soft clip
+            const padCut = 220 + this.padBright * 4200;
+            const padA = clamp((2 * Math.PI * padCut) / sr, 0.0003, 0.9);
+            this.padLp = this.padLp + (pad - this.padLp) * padA;
+            pad = Math.tanh(this.padLp * (0.85 + 1.2 * this.padBright));
+            pad *= this.padEnv * 1.2;
+            // --- Lead: polyBLEP saw + subtle FM for edge
             if (this.mode === "performance") {
-                x = 0;
+                this.leadGate = 1;
+            }
+            else if (this.leadGain > 1e-4 && this.leadProb > 1e-4 && (i & 1023) === 0) {
+                if (Math.random() < this.leadProb)
+                    this.leadGate = 1;
+            }
+            const leadAtk = 1 - Math.exp(-1 / (sr * 0.02));
+            const leadRel = 1 - Math.exp(-1 / (sr * 0.10));
+            const leadK = this.leadGate > this.leadEnv ? leadAtk : leadRel;
+            this.leadEnv += (this.leadGate - this.leadEnv) * leadK;
+            if (this.leadGain > 1e-3 && this.leadEnv > 1e-3) {
+                this.port?.postMessage({ type: "activity", name: "lead", level: this.leadEnv * this.leadGain });
+            }
+            if (this.leadEnv < 1e-4 && this.mode !== "performance")
+                this.leadGate = 0;
+            const leadDt = this.leadFreq * invSr;
+            this.leadPhase += this.leadFreq * invSr;
+            if (this.leadPhase >= 1)
+                this.leadPhase -= 1;
+            const pLead = this.leadPhase;
+            let leadSaw = 2 * pLead - 1;
+            leadSaw -= polyBlep(pLead, leadDt);
+            leadSaw += polyBlep((pLead + 0.5) % 1, leadDt);
+            // tiny FM from sub to add motion
+            const fm = Math.sin(pLead * Math.PI * 2 * 2) * 0.12;
+            leadSaw = Math.tanh((leadSaw + fm) * (0.9 + 1.8 * this.leadBright));
+            const ldCut = 480 + this.leadBright * 6200;
+            const ldA = clamp((2 * Math.PI * ldCut) / sr, 0.0008, 0.95);
+            this.leadLp = this.leadLp + (leadSaw - this.leadLp) * ldA;
+            let ld = this.leadLp;
+            ld *= this.leadEnv * this.leadGain * 1.3;
+            // If in performance mode and pad/lead present, ensure output is not fully muted.
+            if (this.mode === "performance" && (this.padEnv > 1e-4 || this.leadEnv > 1e-4)) {
+                // small floor to avoid DC silence on analyzer
+                x += 1e-6;
             }
             // tick (short noise burst) - simple 1-pole BP-ish tone emphasis
             let tick = 0;
@@ -259,6 +372,8 @@ class DroneProcessor extends AudioWorkletProcessor {
             // drive
             const d = this.drive;
             x = Math.tanh(x * (1 + d * 3.2));
+            // add pad/lead
+            x += pad + ld;
             // pulse/tremolo: make the drone breathe rhythmically
             const pulse = 1 + this.pulseAmt * this.pulseEnv;
             x *= pulse;
