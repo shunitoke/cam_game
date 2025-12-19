@@ -843,8 +843,8 @@ export class DroneWorkletEngine {
 
     src.connect(gMain);
     src.connect(gSend);
-    gMain.connect(this.drumGain);
-    gSend.connect(this.rumbleSend);
+    if (this.drumGain) gMain.connect(this.drumGain);
+    if (this.rumbleSend) gSend.connect(this.rumbleSend);
 
     // Duck rumble on kick
     try {
