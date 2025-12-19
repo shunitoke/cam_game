@@ -61,6 +61,8 @@ export class VisualEngine {
 
   private sceneIndex = 0;
 
+  private readonly handOnlyScenes = new Set(["sea", "logPolar", "coyote", "nikos", "particles"]);
+
   private renderFrameCount = 0;
   private lastRenderAt = 0;
 
@@ -355,8 +357,11 @@ uniform float uStatic; // TV static noise amount during transitions
   update(control: ControlState) {
     if (!this.renderEnabled) return;
 
-    const s = this.scenes[this.sceneIndex]!.scene;
-    s.update(control);
+    const entry = this.scenes[this.sceneIndex]!;
+    const sceneId = entry.def.id;
+    const controlForScene = this.handOnlyScenes.has(sceneId) ? this.stripAudioControl(control) : control;
+
+    entry.scene.update(controlForScene);
 
     this.postTime += control.dt;
 
@@ -371,7 +376,7 @@ uniform float uStatic; // TV static noise amount during transitions
 
     // Render scene to target first.
     this.renderer.setRenderTarget(this.rt);
-    this.renderer.render(s.getScene(), this.camera);
+    this.renderer.render(entry.scene.getScene(), this.camera);
     this.renderer.setRenderTarget(null);
 
     // Postprocess (cat map) to screen.
@@ -461,6 +466,13 @@ uniform float uStatic; // TV static noise amount during transitions
         s.scene.onResize(this.camera);
       }
     }
+    }
+
+  private stripAudioControl(control: ControlState): ControlState {
+    const copy: any = { ...control };
+    copy.beatPulse = 0;
+    delete copy.audioViz;
+    return copy as ControlState;
   }
 }
 
