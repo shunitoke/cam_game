@@ -145,6 +145,7 @@ export class AsciiScene {
           float t = uTime;
 
           float v = 0.0;
+          float matrixMode = 1.0 - clamp(uHasVideo, 0.0, 1.0);
 
           if (uHasVideo > 0.5) {
             float dstAspect = 1.0;
@@ -182,11 +183,17 @@ export class AsciiScene {
             v = clamp(contour + fill * fillAmt, 0.0, 1.0);
             v = pow(v, 1.55 - 0.45 * k);
           } else {
-            // fallback: procedural field
-            v += 0.55 + 0.45 * sin((uv.x * 3.8 + uv.y * 2.2) + t * (0.6 + uEnergy));
-            v += 0.25 * cos((uv.y * 4.7 - uv.x * 2.6) - t * (0.7 + uWet * 1.2));
-            v += 0.30 * uSpectrum;
-            v = clamp(v * 0.55, 0.0, 1.0);
+            // fallback: matrix-style glyph rain when no camera feed
+            float columns = 96.0;
+            float colIdx = floor(fract(uv.x) * columns);
+            float columnSeed = hash(vec2(colIdx, 12.34));
+            float speed = 0.18 + 0.55 * columnSeed + 0.25 * uEnergy;
+            float scroll = fract(uv.y - t * speed + columnSeed);
+            float head = smoothstep(0.02, 0.0, scroll);
+            float trail = pow(1.0 - scroll, 1.65);
+            float sparkle = hash(vec2(colIdx, floor((uv.y + t * 2.0) * columns))) * 0.35;
+            float burst = clamp(uSpectrum * 0.6 + uKick * 0.9 + uBuild * 0.5 + uWet * 0.35, 0.0, 1.0);
+            v = clamp(head * (1.2 + burst) + trail * (0.35 + burst * 0.9) + sparkle, 0.0, 1.0);
           }
 
           // ASCII grid
@@ -213,7 +220,11 @@ export class AsciiScene {
           col = mix(vec3(0.85, 0.98, 0.92), col, uColorize);
 
           vec3 bg = vec3(0.02, 0.025, 0.04);
-          vec3 outCol = mix(bg, col, ink);
+          vec3 asciiCol = mix(bg, col, ink);
+          vec3 matrixBg = vec3(0.008, 0.02, 0.012);
+          vec3 matrixInk = mix(vec3(0.10, 0.25, 0.12), vec3(0.45, 1.0, 0.4), clamp(vv * 1.15, 0.0, 1.0));
+          vec3 matrixCol = mix(matrixBg, matrixInk, ink);
+          vec3 outCol = mix(asciiCol, matrixCol, matrixMode);
 
           // scanline / vignette
           float scan = 0.92 + 0.08 * sin((vUv.y * 900.0) + t * 40.0);

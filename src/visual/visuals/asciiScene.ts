@@ -52,6 +52,48 @@ function makeGlyphAtlas() {
   return { tex, cols, rows };
 }
 
+function makeNoSignalTexture() {
+  const w = 1024;
+  const h = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { tex: null as any, aspect: w / h };
+
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, w, h);
+
+  const glitchCount = 80;
+  for (let i = 0; i < glitchCount; i++) {
+    const gx = Math.random() * w;
+    const gy = Math.random() * h;
+    const gw = 20 + Math.random() * 120;
+    const gh = 2 + Math.random() * 12;
+    const alpha = 0.12 + Math.random() * 0.15;
+    ctx.fillStyle = `rgba(${120 + Math.random() * 80}, ${180 + Math.random() * 60}, ${120 + Math.random() * 80}, ${alpha})`;
+    ctx.fillRect(gx, gy, gw, gh);
+  }
+
+  ctx.font = "bold 160px 'Segoe UI', 'Inter', sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const gradient = ctx.createLinearGradient(0, 0, w, 0);
+  gradient.addColorStop(0, "#00ff94");
+  gradient.addColorStop(1, "#39fff8");
+  ctx.fillStyle = gradient;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+  ctx.shadowBlur = 28;
+  ctx.fillText("NO SIGNAL", w / 2, h / 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return { tex, aspect: w / h };
+}
+
 export class AsciiScene {
   private scene = new THREE.Scene();
   private mesh: any;
@@ -66,6 +108,9 @@ export class AsciiScene {
   private atlasTexture: any = null;
   private atlasCols = 16;
   private atlasRows = 16;
+
+  private noSignalTexture: THREE.Texture | null = null;
+  private noSignalAspect = 1;
 
   private baseW = 4.2;
   private baseH = 2.4;
@@ -89,6 +134,10 @@ export class AsciiScene {
     this.atlasCols = atlas.cols;
     this.atlasRows = atlas.rows;
 
+    const noSig = makeNoSignalTexture();
+    this.noSignalTexture = noSig.tex;
+    this.noSignalAspect = noSig.aspect;
+
     this.mat = new THREE.ShaderMaterial({
       depthWrite: false,
       depthTest: false,
@@ -107,7 +156,10 @@ export class AsciiScene {
         uVideoAspect: { value: 4 / 3 },
         uAtlas: { value: this.atlasTexture },
         uAtlasCols: { value: this.atlasCols },
-        uAtlasRows: { value: this.atlasRows }
+        uAtlasRows: { value: this.atlasRows },
+        uPointer: { value: new THREE.Vector3(0.5, 0.5, 0) },
+        uNoSignal: { value: this.noSignalTexture },
+        uNoSignalAspect: { value: this.noSignalAspect }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -127,6 +179,7 @@ export class AsciiScene {
         uniform float uKick;
         uniform float uGrid;
         uniform float uColorize;
+        uniform vec3 uPointer;
 
         uniform sampler2D uVideo;
         uniform float uHasVideo;
@@ -135,6 +188,8 @@ export class AsciiScene {
         uniform sampler2D uAtlas;
         uniform float uAtlasCols;
         uniform float uAtlasRows;
+        uniform sampler2D uNoSignal;
+        uniform float uNoSignalAspect;
 
         float hash(vec2 p){
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -167,6 +222,7 @@ export class AsciiScene {
           float t = uTime;
 
           float v = 0.0;
+          float matrixMode = 1.0 - clamp(uHasVideo, 0.0, 1.0);
 
           if (uHasVideo > 0.5) {
             float dstAspect = 1.0;
@@ -204,11 +260,22 @@ export class AsciiScene {
             v = clamp(contour + fill * fillAmt, 0.0, 1.0);
             v = pow(v, 1.55 - 0.45 * k);
           } else {
-            // fallback: procedural field
-            v += 0.55 + 0.45 * sin((uv.x * 3.8 + uv.y * 2.2) + t * (0.6 + uEnergy));
-            v += 0.25 * cos((uv.y * 4.7 - uv.x * 2.6) - t * (0.7 + uWet * 1.2));
-            v += 0.30 * uSpectrum;
-            v = clamp(v * 0.55, 0.0, 1.0);
+            // fallback: matrix-style glyph rain when no camera feed
+            float columns = 96.0;
+            float colIdx = floor(fract(uv.x) * columns);
+            float columnSeed = hash(vec2(colIdx, 12.34));
+            float pointerX = clamp(uPointer.x, 0.0, 1.0);
+            float pointerY = clamp(uPointer.y, 0.0, 1.0);
+            float pointerPinch = clamp(uPointer.z, 0.0, 1.0);
+            float pointerBias = exp(-pow((colIdx / columns) - pointerX, 2.0) * 60.0) * (0.35 + 0.65 * pointerPinch);
+            float speed = 0.18 + 0.55 * columnSeed + 0.25 * uEnergy + pointerBias * 0.35;
+            float scroll = fract(uv.y - t * speed + columnSeed);
+            float head = smoothstep(0.02, 0.0, scroll);
+            float trail = pow(1.0 - scroll, 1.65);
+            float sparkle = hash(vec2(colIdx, floor((uv.y + t * 2.0) * columns))) * 0.35;
+            float burst = clamp(uSpectrum * 0.6 + uKick * 0.9 + uBuild * 0.5 + uWet * 0.35, 0.0, 1.0);
+            float swipe = smoothstep(0.0, 0.35, abs(pointerY - uv.y));
+            v = clamp(head * (1.2 + burst + pointerBias * 1.8) + trail * (0.35 + burst * 0.9) + sparkle + swipe * pointerPinch * 0.3, 0.0, 1.0);
           }
 
           // ASCII grid
@@ -235,7 +302,25 @@ export class AsciiScene {
           col = mix(vec3(0.85, 0.98, 0.92), col, uColorize);
 
           vec3 bg = vec3(0.02, 0.025, 0.04);
-          vec3 outCol = mix(bg, col, ink);
+          vec3 asciiCol = mix(bg, col, ink);
+          vec3 matrixBg = vec3(0.008, 0.02, 0.012);
+          vec3 matrixInk = mix(vec3(0.10, 0.25, 0.12), vec3(0.45, 1.0, 0.4), clamp(vv * 1.15, 0.0, 1.0));
+          vec3 matrixCol = mix(matrixBg, matrixInk, ink);
+          vec3 outCol = mix(asciiCol, matrixCol, matrixMode);
+
+          if (matrixMode > 0.01) {
+            vec2 textUv = vUv;
+            textUv.x = (textUv.x - 0.5) * 1.2 + 0.5;
+            textUv.y = (textUv.y - 0.5) * 1.6 + 0.5;
+            float aspect = max(0.001, uNoSignalAspect);
+            textUv.x = textUv.x * aspect / max(1.0, aspect);
+            float textMask = texture2D(uNoSignal, textUv).r;
+            textMask *= smoothstep(0.15, 0.45, textUv.y) * smoothstep(0.85, 0.55, textUv.y);
+            textMask *= smoothstep(-0.15, 0.15, textUv.x) * smoothstep(1.15, 0.85, textUv.x);
+            float pulse = 0.55 + 0.45 * sin(t * 6.0);
+            vec3 textCol = vec3(0.25, 0.95, 0.65) * (1.2 + 0.4 * pulse);
+            outCol = mix(outCol, textCol, textMask);
+          }
 
           // scanline / vignette
           float scan = 0.92 + 0.08 * sin((vUv.y * 900.0) + t * 40.0);
@@ -332,6 +417,15 @@ export class AsciiScene {
     if (video && typeof video.videoWidth === "number" && video.videoWidth > 0 && typeof video.videoHeight === "number" && video.videoHeight > 0) {
       this.mat.uniforms.uVideoAspect.value = video.videoWidth / Math.max(1, video.videoHeight);
       this.mat.uniforms.uHasVideo.value = 1.0;
+    } else {
+      this.mat.uniforms.uHasVideo.value = 0.0;
+    }
+
+    const pointer = this.mat.uniforms.uPointer?.value as THREE.Vector3 | undefined;
+    if (pointer) {
+      pointer.x = clamp01(control.rightX);
+      pointer.y = clamp01(1 - control.rightY);
+      pointer.z = clamp01(control.rightPinch);
     }
 
     if (!this.safeMode) {
