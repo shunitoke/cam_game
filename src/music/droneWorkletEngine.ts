@@ -149,6 +149,7 @@ export class DroneWorkletEngine {
   private droneGtrPresence = 0;
   private droneGtrRightHandSeenAtMs = 0;
   private rawGtrEl: HTMLAudioElement | null = null;
+  private rawGtrElSrc: MediaElementAudioSourceNode | null = null;
   private rawGtrDistortedSrc: AudioBufferSourceNode | null = null;
   private rawGtrGain: GainNode | null = null;
   private rawGtrStartTimeout: number | null = null;
