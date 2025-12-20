@@ -132,6 +132,10 @@ export class DroneWorkletEngine {
   private raveNextVariantBar = 0;
   private raveLastVariantBar = 0;
   private raveRand = 0x12345678;
+  private forceHalfTimeBar = 32;
+  private forceQuarterTimeBar = 64;
+  private forcedHalfTime = false;
+  private forcedQuarterTime = false;
 
   private pulse = 0;
 
@@ -169,6 +173,16 @@ export class DroneWorkletEngine {
   private leadBright = 0.5;
   private leadProb = 0;
   private leadBaseHz = 440;
+  private autoPadHoldUntilMs = 0;
+  private autoPadGainTarget = 0;
+  private autoPadBright = 0.6;
+  private autoPadFreq = 220;
+  private autoLeadHoldUntilMs = 0;
+  private autoLeadGainTarget = 0;
+  private autoLeadFreq = 440;
+  private autoLeadBright = 0.7;
+  private lastAutoPadBar = -8;
+  private lastAutoLeadBar = -8;
 
   private garageMelBus: GainNode | null = null;
   private garageMelFilter: BiquadFilterNode | null = null;
@@ -315,15 +329,16 @@ export class DroneWorkletEngine {
     this.bassRootHz = midiToHz(chord.padLow - 12);
     this.bassAltHz = midiToHz(chord.padHigh - 12);
     const root = chord.padLow;
-    const third = root + 3;
-    const fifth = root + 7;
-    const top = chord.lead;
-    this.garageMelNotesHz = [
-      midiToHz(root),
-      midiToHz(third),
-      midiToHz(fifth),
-      midiToHz(top)
+    const upper = chord.padHigh;
+    const lead = chord.lead;
+    const technoStack = [
+      root - 5,          // sub fifth for tension
+      root + 6,          // tritone bite
+      upper + 2,         // lifted add9 color
+      lead + 7,          // soaring 11th-ish
+      root + 11          // sharp fifth shimmer
     ];
+    this.garageMelNotesHz = technoStack.map((n) => midiToHz(n));
   }
 
   private updateHarmonyTimeline(bar: number) {
@@ -436,19 +451,47 @@ export class DroneWorkletEngine {
     // 0 normal
     // 1 kick-drop (no kick)
     // 2 kick-sparse (kick only on 1)
-    // 3 half-time (kick on 1+3 only)
+    // 3 half-time (kick on 1+3 only, FX-lean)
     // 4 hats-only (no kick + no snare, percussion stays)
+    // 5 hat-break (quarter-time kick, hats whisper, FX burst)
     const r = this.rand01();
     // Variants should be able to happen even with no hands.
-    if (r < 0.42) return 1;
-    if (r < 0.70) return 2;
-    if (r < 0.88) return 3;
-    return 4;
+    if (r < 0.38) return 1;
+    if (r < 0.64) return 2;
+    if (r < 0.82) return 3;
+    if (r < 0.92) return 4;
+    return 5;
   }
 
   private maybeAdvanceBarVariant(bar: number, section: number, dens: number, fillOn: boolean) {
-    if (bar < this.raveNextVariantBar) return;
+    const applyVariant = (variant: number, lenBars: number) => {
+      this.raveBarVariant = variant;
+      this.raveVariantUntilBar = bar + lenBars;
+      this.raveLastVariantBar = bar;
+      if (variant === 3) {
+        this.triggerMacroFxBlast(clamp(0.55 + dens * 0.3, 0, 1));
+      } else if (variant === 5) {
+        this.triggerMacroFxBlast(clamp(0.75 + dens * 0.2, 0, 1));
+      }
+      const rr = this.rand01();
+      const cooldown = rr < 0.20 ? 16 : rr < 0.70 ? 12 : 8;
+      this.raveNextVariantBar = bar + Math.max(lenBars, cooldown);
+    };
+
     if (fillOn) return;
+
+    if (!this.forcedHalfTime && bar >= this.forceHalfTimeBar && section >= 1) {
+      this.forcedHalfTime = true;
+      applyVariant(3, 4);
+      return;
+    }
+    if (!this.forcedQuarterTime && bar >= this.forceQuarterTimeBar && section >= 2) {
+      this.forcedQuarterTime = true;
+      applyVariant(5, 4);
+      return;
+    }
+
+    if (bar < this.raveNextVariantBar) return;
 
     // One-bar holes, with cooldown. Must work even with no hands.
     // When no hands, make the break chance higher so you still get movement.
@@ -462,13 +505,9 @@ export class DroneWorkletEngine {
     const force = barsSince >= 24;
 
     if (force || this.rand01() < chance) {
-      this.raveBarVariant = this.pickBarVariant(section, dens);
-      this.raveVariantUntilBar = bar + 1;
-      this.raveLastVariantBar = bar;
-
-      const rr = this.rand01();
-      const cooldown = rr < 0.20 ? 16 : rr < 0.70 ? 12 : 8;
-      this.raveNextVariantBar = bar + cooldown;
+      const variant = this.pickBarVariant(section, dens);
+      const len = variant === 3 || variant === 5 ? 4 : 1;
+      applyVariant(variant, len);
     } else {
       this.raveBarVariant = 0;
       this.raveVariantUntilBar = 0;
@@ -998,9 +1037,9 @@ export class DroneWorkletEngine {
       this.garageMelFilter.Q.value = 2.2 + dens * 1.4;
     }
 
-    const accent = clamp(weight * (0.4 + 0.6 * dens) * (section >= 2 ? 1.15 : 0.9), 0, 0.75);
+    const accent = clamp(0.22 + weight * 0.28 + dens * 0.12, 0, 0.55);
     const attack = 0.008;
-    const decay = 0.22 + dens * 0.12;
+    const decay = 0.24 + dens * 0.10;
 
     try {
       this.garageMelBus.gain.cancelScheduledValues(time);
@@ -1012,6 +1051,29 @@ export class DroneWorkletEngine {
     }
 
     this.markSample("lead", accent);
+  }
+
+  private maybeTriggerAutoSynths(section: number, dens: number) {
+    if (this.mode !== "performance") return;
+    const nowMs = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (!this.midiPadNote && this.raveTotalBars >= 4) {
+      const gap = section >= 2 ? 4 : 8;
+      if (this.raveBar - this.lastAutoPadBar >= gap) {
+        this.triggerAutoPad(nowMs, section, dens);
+      }
+    }
+  }
+
+  private triggerAutoPad(nowMs: number, section: number, dens: number) {
+    const sustain = 4200 + section * 1200 + dens * 800;
+    const gain = clamp(0.28 + section * 0.16 + dens * 0.25, 0, 0.9);
+    const bright = clamp(0.45 + section * 0.18 + dens * 0.1, 0, 1);
+    const useHigh = section >= 2 && this.rand01() > 0.4;
+    this.autoPadHoldUntilMs = nowMs + sustain;
+    this.autoPadGainTarget = gain;
+    this.autoPadBright = bright;
+    this.autoPadFreq = useHigh ? this.padChordHighHz : this.padChordLowHz;
+    this.lastAutoPadBar = this.raveBar;
   }
 
   private triggerBassNote(time: number, weight: number, step: number, section: number, dens: number) {
@@ -1213,9 +1275,10 @@ export class DroneWorkletEngine {
     const kickMix = Math.min(1, this.stageMix(1, 4) + introSlope * 0.5);
     const hatMix = Math.min(1, kickMix * hatBoost);
     const percMix = clamp((kickMix - 0.25) / 0.75, 0, 1) * percBoost;
+    let kickAccent = 1;
     const triggerKick = (when: number, gain: number) => {
       if (kickMix <= 0.02) return;
-      this.fireKick(when, gain * kickMix);
+      this.fireKick(when, gain * kickMix * kickAccent);
     };
 
     const bar = this.raveBar;
@@ -1223,17 +1286,25 @@ export class DroneWorkletEngine {
     const fillOn = this.raveFillUntilBar > bar;
     const groove = this.raveGroove | 0;
 
+    this.maybeTriggerAutoSynths(section, dens);
+
     const variantOn = this.raveVariantUntilBar > bar;
     const variant = variantOn ? (this.raveBarVariant | 0) : 0;
 
     let kick = step === 0 || step === 4 || step === 8 || step === 12;
-    const offHat = step === 2 || step === 6 || step === 10 || step === 14;
-    const hat16 = (step & 1) === 1;
-    const openHat = step === 14;
+    let offHat = step === 2 || step === 6 || step === 10 || step === 14;
+    let hat16 = (step & 1) === 1;
+    let openHat = step === 14;
 
     // Sparse minimal punctuation
     let rim = step === 10 || (groove === 2 && step === 6);
     let snare = step === 12;
+    let hatMixScale = 1;
+    let percMixScale = 1;
+    let suppressFillHat = false;
+    let suppressFillRim = false;
+    let garageMute = false;
+    let bassScale = 1;
 
     // Global kick gating: when a break variant is active, we must also suppress ALL ghost kicks.
     let kickAllowed = true;
@@ -1249,6 +1320,32 @@ export class DroneWorkletEngine {
       } else if (variant === 3) {
         // Half-time: keep 1+3.
         kick = step === 0 || step === 8;
+        snare = false;
+        rim = false;
+        hatMixScale = 0.55;
+        percMixScale = 0.25;
+        garageMute = true;
+        bassScale = 0.7;
+        kickAccent = 0.9;
+        this.triggerMacroFxBlast(clamp(0.55 + dens * 0.25, 0, 1));
+        if (this.fxFilter) {
+          try {
+            this.fxFilter.frequency.setTargetAtTime(5200, time, 0.02);
+            this.fxFilter.Q.setTargetAtTime(2.4, time, 0.05);
+          } catch {
+            this.fxFilter.frequency.value = 5200;
+            this.fxFilter.Q.value = 2.4;
+          }
+        }
+        if (this.fxDelayMix && this.fxDelayFb) {
+          try {
+            this.fxDelayMix.gain.setTargetAtTime(0.22, time, 0.03);
+            this.fxDelayFb.gain.setTargetAtTime(0.48, time, 0.03);
+          } catch {
+            this.fxDelayMix.gain.value = 0.22;
+            this.fxDelayFb.gain.value = 0.48;
+          }
+        }
       } else if (variant === 4) {
         // Hats-only: keep hat grid, drop kick + snare for a bar.
         kick = false;
@@ -1256,11 +1353,45 @@ export class DroneWorkletEngine {
         snare = false;
         // Rim can stay (quiet) as punctuation.
         rim = rim && section >= 2 && dens > 0.25;
+      } else if (variant === 5) {
+        // Quarter-time kick (1 only), keep whisper hats, add FX emphasis.
+        kick = step === 0;
+        offHat = step === 6 || step === 14;
+        hat16 = false;
+        openHat = false;
+        snare = false;
+        rim = false;
+        suppressFillHat = true;
+        suppressFillRim = true;
+        hatMixScale = 0.25;
+        percMixScale = 0.1;
+        garageMute = true;
+        bassScale = 0.4;
+        kickAccent = 0.85;
+        this.triggerMacroFxBlast(0.85);
+        if (this.fxFilter) {
+          try {
+            this.fxFilter.frequency.setTargetAtTime(4200, time, 0.02);
+            this.fxFilter.Q.setTargetAtTime(3.2, time, 0.04);
+          } catch {
+            this.fxFilter.frequency.value = 4200;
+            this.fxFilter.Q.value = 3.2;
+          }
+        }
+        if (this.fxDelayMix && this.fxDelayFb) {
+          try {
+            this.fxDelayMix.gain.setTargetAtTime(0.28, time, 0.02);
+            this.fxDelayFb.gain.setTargetAtTime(0.55, time, 0.02);
+          } catch {
+            this.fxDelayMix.gain.value = 0.28;
+            this.fxDelayFb.gain.value = 0.55;
+          }
+        }
       }
     }
 
-    const fillHat = fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
-    const fillRim = fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
+    const fillHat = !suppressFillHat && fillOn && (this.raveFillType === 1 || this.raveFillType === 3) && (step >= 10 && hat16);
+    const fillRim = !suppressFillRim && fillOn && this.raveFillType === 2 && (step >= 12 && (step & 1) === 1);
 
     if (kickAllowed && kick) {
       triggerKick(time, 1.0);
@@ -1287,8 +1418,8 @@ export class DroneWorkletEngine {
     }
 
     // Hats
-    const hatBreakMix = inBreak ? hatMix * 0.6 : hatMix;
-    const percBreakMix = inBreak ? percMix * 0.55 : percMix;
+    const hatBreakMix = (inBreak ? hatMix * 0.6 : hatMix) * hatMixScale;
+    const percBreakMix = (inBreak ? percMix * 0.55 : percMix) * percMixScale;
 
     if (offHat && this.sampleHat && hatBreakMix > 0.02) {
       // Base velocity with RNG variation
@@ -1389,7 +1520,7 @@ export class DroneWorkletEngine {
     }
 
     const garageWeight = this.garageMelodyPattern[step] ?? 0;
-    if (garageWeight > 0 && !inBreak && section >= 1) {
+    if (!garageMute && garageWeight > 0 && !inBreak && section >= 1) {
       const dens = Math.min(1, Math.max(0, this.lastRightPinch));
       this.triggerGarageMelody(time, garageWeight, step, dens, section);
     }
@@ -1399,7 +1530,7 @@ export class DroneWorkletEngine {
       const dens = Math.min(1, Math.max(0, this.lastRightPinch));
       const breakdownScale = this.breakdownActive ? 0.45 : 1;
       const energy = Math.max(kickMix, 0.28);
-      const weight = bassWeight * breakdownScale * energy;
+      const weight = bassWeight * breakdownScale * energy * bassScale;
       this.triggerBassNote(time, weight, step, section, dens);
       this.markSample("bass", Math.min(1, weight * 0.5));
     }
@@ -1803,29 +1934,40 @@ export class DroneWorkletEngine {
     if (this.mode === "performance") {
       const midiPadOn = this.midiPadNote != null;
       const midiLeadOn = this.midiLeadNote != null;
+      const autoPadActive = !midiPadOn && nowMs < this.autoPadHoldUntilMs;
+      const autoLeadActive = !midiLeadOn && nowMs < this.autoLeadHoldUntilMs;
 
       if (midiPadOn) {
         // map note 42/44 to pad
         const n = this.midiPadNote!;
-        this.padGain = 0.55;
+        this.padGain = 0.34;
         this.padGate = 1;
         const padHz = n === 44 ? this.padChordHighHz : this.padChordLowHz;
         this.padFreq = padHz;
-        this.padBright = 0.65;
-        this.padDetune = 0.012;
+        this.padBright = 0.52;
+        this.padDetune = 0.01;
+      } else if (autoPadActive) {
+        this.padGain = this.autoPadGainTarget;
+        this.padGate = 1;
+        this.padFreq = this.autoPadFreq;
+        this.padBright = this.autoPadBright;
+        this.padDetune = 0.01;
       } else {
-        // No keyboard pad note: keep pad silent
         this.padGain = 0;
         this.padGate = 0;
       }
 
       if (midiLeadOn) {
-        this.leadGain = 0.5;
+        this.leadGain = 0.24;
         this.leadFreq = this.leadBaseHz;
-        this.leadBright = 0.70;
+        this.leadBright = 0.58;
+        this.leadProb = 1;
+      } else if (autoLeadActive) {
+        this.leadGain = this.autoLeadGainTarget;
+        this.leadFreq = this.autoLeadFreq;
+        this.leadBright = this.autoLeadBright;
         this.leadProb = 1;
       } else {
-        // No keyboard lead note: disable auto lead hits
         this.leadGain = 0;
         this.leadProb = 0;
         this.leadBright = 0.2;
