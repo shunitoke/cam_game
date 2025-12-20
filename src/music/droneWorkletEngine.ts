@@ -2931,6 +2931,10 @@ export class DroneWorkletEngine {
 
             const strumThreshold = 0.7;
             const strumActive = !kill && p >= strumThreshold;
+            const cleanSampleAvailable = !!(this.rawGtrEl && this.rawGtrGain);
+            const cleanGainHand = Math.min(1.1, 0.85 + 0.25 * (1 - this.idleAmt));
+            const cleanGainIdle = Math.min(0.15, 0.1 + 0.05 * (1 - this.idleAmt));
+            const cleanGainBase = strumActive ? 0 : cleanActive ? cleanGainHand : cleanGainIdle;
 
             console.log(`Hand detection: cleanActive=${cleanActive}, pinch=${p.toFixed(2)}, strumThreshold=${strumThreshold}, strumActive=${strumActive}`);
 
@@ -2941,54 +2945,42 @@ export class DroneWorkletEngine {
             }
 
             // Control raw guitar audio element
-            if (this.rawGtrGain && this.rawGtrEl) {
-              // Sample silent during pinch, loud when hand present, quiet otherwise
-              const rawGtrGainValue = strumActive
-                ? 0
-                : cleanActive
-                  ? Math.min(1.1, 0.85 + 0.25 * (1 - this.idleAmt))
-                  : Math.min(0.15, 0.1 + 0.05 * (1 - this.idleAmt));
+            if (cleanSampleAvailable) {
+              const rawGtrGainValue = cleanGainBase;
+              console.log(
+                `Guitar(raw): cleanActive=${cleanActive}, strumActive=${strumActive}, gain=${rawGtrGainValue.toFixed(2)}, paused=${this.rawGtrEl?.paused}`
+              );
 
-              console.log(`Guitar: cleanActive=${cleanActive}, strumActive=${strumActive}, gain=${rawGtrGainValue.toFixed(2)}, paused=${this.rawGtrEl.paused}`);
-
-              // Route through distortion when hand present, directly to destination for clean when no hand
               if (strumActive) {
-                // Pinching: fully disconnect raw sample
                 try {
-                  this.rawGtrGain.disconnect();
+                  this.rawGtrGain?.disconnect();
                   console.log("PINCH: SAMPLE DISCONNECTED");
                 } catch {}
               } else if (this.ctx?.destination) {
-                // Not pinching: route directly to destination for clean sound (bypasses all distortion)
                 try {
-                  this.rawGtrGain.disconnect();
-                  this.rawGtrGain.connect(this.ctx.destination);
+                  this.rawGtrGain?.disconnect();
+                  this.rawGtrGain?.connect(this.ctx.destination);
                   console.log("ROUTED TO CLEAN (DESTINATION)");
                 } catch {}
               }
 
-              // Set gain level
               try {
-                this.rawGtrGain.gain.setTargetAtTime(rawGtrGainValue, t, 0.18);
+                this.rawGtrGain!.gain.setTargetAtTime(rawGtrGainValue, t, 0.18);
               } catch {
-                this.rawGtrGain.gain.value = rawGtrGainValue;
+                this.rawGtrGain!.gain.value = rawGtrGainValue;
               }
 
-              // Sample starts playing immediately when scene loads (when no pending restart)
-              if (!strumActive && this.rawGtrStartTimeout === null && this.rawGtrEl.paused && rawGtrGainValue > 0) {
+              if (!strumActive && this.rawGtrStartTimeout === null && this.rawGtrEl!.paused && rawGtrGainValue > 0) {
                 try {
-                  void this.rawGtrEl.play();
+                  void this.rawGtrEl!.play();
                 } catch {}
               }
 
-              // Control playback - pause when pinching, restart with 2-second delay when pinch ends
               const justReleasedPinch = this.droneGtrHandActive && !strumActive;
-
               if (justReleasedPinch && rawGtrGainValue > 0) {
-                // Start 2-second delay when pinch is released
-                if (!this.rawGtrEl.paused) {
+                if (!this.rawGtrEl!.paused) {
                   try {
-                    this.rawGtrEl.pause();
+                    this.rawGtrEl!.pause();
                   } catch {}
                 }
                 if (this.rawGtrStartTimeout !== null) {
@@ -3000,32 +2992,42 @@ export class DroneWorkletEngine {
                     return;
                   }
                   try {
-                    this.rawGtrEl.currentTime = 0; // Restart from beginning
+                    this.rawGtrEl.currentTime = 0;
                     void this.rawGtrEl.play();
                   } catch {}
                   this.rawGtrStartTimeout = null;
                 }, 2000);
-              } else if (strumActive && !this.rawGtrEl.paused) {
-                // Pause immediately when pinching starts
+              } else if (strumActive && !this.rawGtrEl!.paused) {
                 if (this.rawGtrStartTimeout !== null) {
                   clearTimeout(this.rawGtrStartTimeout);
                   this.rawGtrStartTimeout = null;
                 }
                 try {
-                  this.rawGtrEl.pause();
+                  this.rawGtrEl!.pause();
                 } catch {}
               }
-            }
 
-            // Don't create/stop distorted source - let the distortion chain handle it through routing
-
-            if (cleanActive) {
+              if (this.droneGtrLoopGain) {
+                try {
+                  this.droneGtrLoopGain.gain.setTargetAtTime(0, t, 0.18);
+                } catch {
+                  this.droneGtrLoopGain.gain.value = 0;
+                }
+              }
+              if (this.droneGtrLoopSrc && loopNow - this.droneGtrLoopLastActiveMs > 1200) {
+                try {
+                  this.droneGtrLoopSrc.stop();
+                } catch {}
+                try {
+                  this.droneGtrLoopSrc.disconnect();
+                } catch {}
+                this.droneGtrLoopSrc = null;
+              }
+            } else if (cleanActive) {
               this.droneGtrLoopLastActiveMs = loopNow;
               this.ensureGuitarLoopSource();
               if (this.droneGtrLoopGain) {
-                const loopLevel = strumActive
-                  ? 0
-                  : Math.min(0.85, 0.38 + 0.32 * (1 - this.idleAmt));
+                const loopLevel = cleanGainBase;
                 try {
                   this.droneGtrLoopGain.gain.setTargetAtTime(loopLevel, t, 0.18);
                 } catch {
@@ -3041,13 +3043,11 @@ export class DroneWorkletEngine {
                 } catch {}
                 this.droneGtrLoopSrc = null;
               }
-            } else {
-              if (this.droneGtrLoopGain) {
-                try {
-                  this.droneGtrLoopGain.gain.setTargetAtTime(0, t, 0.25);
-                } catch {
-                  this.droneGtrLoopGain.gain.value = 0;
-                }
+            } else if (this.droneGtrLoopGain) {
+              try {
+                this.droneGtrLoopGain.gain.setTargetAtTime(0, t, 0.25);
+              } catch {
+                this.droneGtrLoopGain.gain.value = 0;
               }
               if (this.droneGtrLoopSrc && loopNow - this.droneGtrLoopLastActiveMs > 4500) {
                 try {

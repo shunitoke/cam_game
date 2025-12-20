@@ -65,6 +65,108 @@ async function main() {
     app.appendChild(canvas);
     const overlayCanvas = el("canvas", "overlay");
     app.appendChild(overlayCanvas);
+    const mouseHandState = {
+        active: false,
+        hovering: false,
+        pinching: false,
+        pointerId: null,
+        x: 0.5,
+        y: 0.85,
+        lastX: 0.5,
+        lastY: 0.85,
+        speed: 0,
+        lastUpdate: performance.now()
+    };
+    const updateMouseHandFromEvent = (ev) => {
+        const rect = overlayCanvas.getBoundingClientRect();
+        if (!rect.width || !rect.height)
+            return;
+        const normX = clamp01((ev.clientX - rect.left) / rect.width);
+        const normY = clamp01((ev.clientY - rect.top) / rect.height);
+        const now = performance.now();
+        const dt = Math.max(1e-3, (now - mouseHandState.lastUpdate) / 1000);
+        const dx = normX - mouseHandState.lastX;
+        const dy = normY - mouseHandState.lastY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        mouseHandState.speed = clamp01((dist / dt) / 2.2);
+        mouseHandState.x = normX;
+        mouseHandState.y = normY;
+        mouseHandState.lastX = normX;
+        mouseHandState.lastY = normY;
+        mouseHandState.lastUpdate = now;
+    };
+    const releaseMousePointer = () => {
+        window.removeEventListener("pointermove", handleCapturedPointerMove);
+        window.removeEventListener("pointerup", handleCapturedPointerUp);
+        window.removeEventListener("pointercancel", handleCapturedPointerUp);
+        mouseHandState.pointerId = null;
+    };
+    const handleCapturedPointerMove = (ev) => {
+        if (ev.pointerId !== mouseHandState.pointerId)
+            return;
+        updateMouseHandFromEvent(ev);
+    };
+    const handleCapturedPointerUp = (ev) => {
+        if (ev.pointerId !== mouseHandState.pointerId)
+            return;
+        mouseHandState.pinching = false;
+        releaseMousePointer();
+        if (!mouseHandState.hovering) {
+            mouseHandState.active = false;
+            mouseHandState.speed = 0;
+        }
+    };
+    overlayCanvas.addEventListener("pointerenter", (ev) => {
+        mouseHandState.hovering = true;
+        mouseHandState.active = true;
+        updateMouseHandFromEvent(ev);
+    });
+    overlayCanvas.addEventListener("pointerleave", () => {
+        mouseHandState.hovering = false;
+        if (!mouseHandState.pinching) {
+            mouseHandState.active = false;
+            mouseHandState.speed = 0;
+        }
+    });
+    overlayCanvas.addEventListener("pointermove", (ev) => {
+        if (!mouseHandState.hovering && !mouseHandState.pinching)
+            return;
+        mouseHandState.active = true;
+        updateMouseHandFromEvent(ev);
+    });
+    overlayCanvas.addEventListener("pointerdown", (ev) => {
+        mouseHandState.hovering = true;
+        mouseHandState.active = true;
+        updateMouseHandFromEvent(ev);
+        if (ev.button !== 0)
+            return;
+        mouseHandState.pinching = true;
+        mouseHandState.pointerId = ev.pointerId;
+        window.addEventListener("pointermove", handleCapturedPointerMove);
+        window.addEventListener("pointerup", handleCapturedPointerUp);
+        window.addEventListener("pointercancel", handleCapturedPointerUp);
+        ev.preventDefault();
+    });
+    const mergeHandsWithMouse = (frame) => {
+        if (!mouseHandState.active)
+            return frame;
+        const mouseHand = {
+            label: "Right",
+            score: 1,
+            center: { x: mouseHandState.x, y: mouseHandState.y },
+            wrist: { x: mouseHandState.x, y: mouseHandState.y },
+            pinch: mouseHandState.pinching ? 1 : 0,
+            open: !mouseHandState.pinching,
+            fist: mouseHandState.pinching,
+            speed: mouseHandState.speed
+        };
+        const hands = frame.hands.filter((h) => h.label !== "Right");
+        hands.push(mouseHand);
+        return {
+            count: hands.length,
+            hands
+        };
+    };
     const ui = el("div", "ui");
     const panel = el("div", "panel");
     const controlsRow = el("div", "row controls");
@@ -162,17 +264,19 @@ async function main() {
         if (mode === "drone") {
             gestureHint.textContent =
                 "Gestures (DRONE)\n" +
-                    "- Keys: pitch\n" +
-                    "- Left (BASS): pinch = level, X = pitch, Y = tone\n" +
-                    "- Right (GUITAR): pinch = level, X = pitch, Y = brightness\n";
+                    "- Keys: pitch (hold)\n" +
+                    "- Left (BASS): Y = pitch/level, pinch = grit, X = modulation\n" +
+                    "- Right (GUITAR): hand = clean strum, pinch = drive, X = pitch, Y = brightness\n";
         }
         else {
             gestureHint.textContent =
                 "Gestures (RAVE)\n" +
-                    "- Left X: tempo\n" +
-                    "- Right Y: drum tone\n" +
-                    "- Right pinch: FX drive\n" +
-                    "- Left pinch: pad gate";
+                    "- Right: filter / FX / density\n" +
+                    "- Left pinch: kick bias\n" +
+                    "- Left Y: macro drive\n" +
+                    "- Build (hands apart): scene lift\n" +
+                    "- MIDI 36/38/39/40: kick/hat/clap/rim\n" +
+                    "- MIDI 41/42/43/44: bass/pad/lead/pad2";
         }
     };
     let noHandsSinceMs = null;
@@ -217,6 +321,9 @@ async function main() {
     video.muted = true;
     videoWrap.appendChild(video);
     document.body.appendChild(videoWrap);
+    const videoWrapStyle = window.getComputedStyle(videoWrap);
+    const videoWrapBaseOpacity = videoWrapStyle.opacity || "1";
+    const videoWrapBasePointerEvents = videoWrapStyle.pointerEvents || "auto";
     const midiOverlay = el("div", "midiOverlay");
     midiOverlay.style.display = "none";
     const midiOverlayHeader = el("div", "midiOverlayHeader");
@@ -718,6 +825,9 @@ async function main() {
     const applyAudioMode = (mode, options = {}) => {
         const prevMode = audioMode;
         audioMode = mode;
+        if (mode === "performance" && prevMode !== "performance") {
+            controlBus.reset();
+        }
         modeBtn.textContent = mode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
         updateGestureHint(mode);
         audio?.setMode(mode);
@@ -951,7 +1061,7 @@ async function main() {
             else {
                 overlay.draw([]);
             }
-            const control = controlBus.update({ t, dt, hands });
+            const control = controlBus.update({ t, dt, hands: mergeHandsWithMouse(hands) });
             // Render the HUD meter at full rAF speed (independent from the throttled HUD text).
             // Uses lastAudioViz which is already throttled upstream.
             if (hudOn && audioVizOn) {
@@ -1071,6 +1181,7 @@ async function main() {
                         hit("hat", 38, 0);
                         hit("clap", 39, 0);
                         hit("rim", 40, 0);
+                        hit("bass", 41, 0);
                         hit("openhat", 47, 0);
                         hit("pad", 42, 0);
                         hit("pad", 44, 0);
@@ -1168,37 +1279,37 @@ async function main() {
                     }
                     rms = Math.sqrt(sum / Math.max(1, n / 2));
                 }
-                const baseIntensity = 0.1 + pinch * 0.2;
-                const intensity = Math.min(1, Math.max(baseIntensity, rms * 14 * (1 + pinch * 0.6)));
-                const jiggle = intensity > 0.02;
-                const shake = intensity * 18 * (1 + pinch * 0.8);
-                const rot = intensity * 3.4 * (1 + pinch * 0.6);
-                const spread = 1 + intensity * 0.04 + pinch * 0.05;
-                const dx = jiggle ? (Math.random() - 0.5) * shake : 0;
-                const dy = jiggle ? (Math.random() - 0.5) * shake : 0;
-                ui.style.transform = jiggle ? `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${spread})` : "";
-                hud.style.transform = jiggle
-                    ? `translate(${dx * 0.7}px, ${dy * 0.7}px) rotate(${rot * 0.6}deg) scale(${1 + intensity * 0.02})`
-                    : "";
-                // Keyboard tilts opposite direction for contrast and stretches outward.
-                const kDx = jiggle ? -dx * (1.1 + pinch * 0.2) : 0;
-                const kDy = jiggle ? dy * (0.9 + pinch * 0.2) : 0;
-                midiOverlay.style.transform = jiggle
-                    ? `translate(${kDx}px, ${kDy}px) rotate(${-rot * 1.2}deg) scale(${1 + intensity * 0.05 + pinch * 0.05})`
-                    : "";
-                midiOverlay.style.filter = jiggle ? `contrast(${1 + intensity * 1.5}) saturate(${1 + intensity})` : "";
-                const flashChance = Math.min(0.95, intensity * 0.9 + 0.05);
-                const glow = `0 0 ${10 + intensity * 25}px rgba(255,150,60,${0.4 + 0.5 * intensity})`;
-                for (const key of midiKeyEls.values()) {
-                    const active = Math.random() < flashChance;
-                    const flicker = active ? 1 + intensity + pinch * 0.5 : 0.4 + intensity * 0.6;
-                    const hueShift = active ? 40 + intensity * 60 + pinch * 80 : 32;
-                    key.style.boxShadow = active ? glow : "0 0 6px rgba(200,120,40,0.35)";
-                    key.style.filter = `brightness(${flicker}) contrast(${1.0 + intensity * 0.4}) hue-rotate(${hueShift}deg)`;
-                    key.style.opacity = String(0.35 + intensity * 0.6);
-                    key.style.transform = active
-                        ? `rotate(${(Math.random() - 0.5) * rot * 2}deg) scale(${1 + pinch * 0.3})`
-                        : `scale(${1 + pinch * 0.1})`;
+                const threshold = 0.06;
+                const energy = Math.max(0, rms - threshold);
+                const intensity = Math.min(1, energy * (10 + pinch * 2.5));
+                if (intensity < 0.12) {
+                    resetDroneGlitch();
+                }
+                else {
+                    const shake = intensity * (12 + pinch * 6);
+                    const rot = intensity * (2.4 + pinch * 1.2);
+                    const spread = 1 + intensity * 0.035 + pinch * 0.03;
+                    const dx = (Math.random() - 0.5) * shake;
+                    const dy = (Math.random() - 0.5) * shake;
+                    ui.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${spread})`;
+                    hud.style.transform = `translate(${dx * 0.55}px, ${dy * 0.55}px) rotate(${rot * 0.45}deg) scale(${1 + intensity * 0.015})`;
+                    const kDx = -dx * (0.9 + pinch * 0.1);
+                    const kDy = dy * (0.8 + pinch * 0.1);
+                    midiOverlay.style.transform = `translate(${kDx}px, ${kDy}px) rotate(${-rot * 0.9}deg) scale(${1 + intensity * 0.03 + pinch * 0.03})`;
+                    midiOverlay.style.filter = `contrast(${1 + intensity * 0.9}) saturate(${1 + intensity * 0.6})`;
+                    const flashChance = Math.min(0.8, intensity * 0.6 + 0.1);
+                    const glow = `0 0 ${8 + intensity * 16}px rgba(255,150,60,${0.3 + 0.4 * intensity})`;
+                    for (const key of midiKeyEls.values()) {
+                        const active = Math.random() < flashChance;
+                        const flicker = active ? 1 + intensity * 0.8 + pinch * 0.3 : 0.5 + intensity * 0.4;
+                        const hueShift = active ? 25 + intensity * 40 + pinch * 40 : 28;
+                        key.style.boxShadow = active ? glow : "0 0 4px rgba(200,120,40,0.25)";
+                        key.style.filter = `brightness(${flicker}) contrast(${1.0 + intensity * 0.25}) hue-rotate(${hueShift}deg)`;
+                        key.style.opacity = String(0.4 + intensity * 0.4);
+                        key.style.transform = active
+                            ? `rotate(${(Math.random() - 0.5) * rot}deg) scale(${1 + pinch * 0.18})`
+                            : `scale(${1 + pinch * 0.03})`;
+                    }
                 }
             }
             else {
@@ -1251,6 +1362,7 @@ async function main() {
             if (controlWithViz.events.reset) {
                 audio?.reset();
                 visuals.reset();
+                void audio?.setMode?.(audioMode);
             }
             const vT0 = performance.now();
             // Rendering at full rAF speed can starve Tone's scheduler on some machines.
@@ -1278,9 +1390,47 @@ async function main() {
     };
     document.addEventListener("visibilitychange", () => {
         const hidden = document.visibilityState !== "visible";
+        if (audio) {
+            audio.setBackgroundMode(hidden);
+            if (hidden) {
+                if (audioUpdateTimer !== null) {
+                    try {
+                        window.clearInterval(audioUpdateTimer);
+                    }
+                    catch {
+                    }
+                    audioUpdateTimer = null;
+                }
+                audioUpdateTimer = window.setInterval(() => {
+                    try {
+                        runAudioTick();
+                    }
+                    catch {
+                    }
+                }, 250);
+            }
+            else {
+                if (audioUpdateTimer !== null) {
+                    try {
+                        window.clearInterval(audioUpdateTimer);
+                    }
+                    catch {
+                    }
+                    audioUpdateTimer = null;
+                }
+                if (running && audioOn) {
+                    audioUpdateTimer = window.setInterval(() => {
+                        try {
+                            runAudioTick();
+                        }
+                        catch {
+                        }
+                    }, 33);
+                }
+            }
+        }
         if (hidden !== wasHidden) {
             wasHidden = hidden;
-            // Reset timers so returning to the tab doesn't produce a huge dt.
             lastT = performance.now();
             lastTickAt = performance.now();
         }
@@ -1453,12 +1603,27 @@ async function main() {
             return "unknown error";
         }
     };
+    const runAudioTick = () => {
+        if (!running || !audioOn)
+            return;
+        const c = lastControlForAudio;
+        if (!c)
+            return;
+        if (audio && !audio.isRunning()) {
+            void audio.resume();
+        }
+        const aT0 = performance.now();
+        audio?.update(c);
+        const aT1 = performance.now();
+        tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+    };
     const start = async () => {
         startBtn.disabled = true;
         startBtn.textContent = "Entering...";
         camSpan.title = "";
         audSpan.title = "";
         midiSpan.title = "";
+        controlBus.reset();
         camSpan.textContent = "starting";
         try {
             await tracker.start(video);
@@ -1546,15 +1711,7 @@ async function main() {
         if (audioOn) {
             audioUpdateTimer = window.setInterval(() => {
                 try {
-                    if (!running || !audioOn)
-                        return;
-                    const c = lastControlForAudio;
-                    if (!c)
-                        return;
-                    const aT0 = performance.now();
-                    audio?.update(c);
-                    const aT1 = performance.now();
-                    tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                    runAudioTick();
                 }
                 catch {
                     // ignore
@@ -1580,12 +1737,16 @@ async function main() {
             audioUpdateTimer = null;
         }
         await audio?.stop();
+        audio = null;
+        audioMode = "performance";
+        sceneBadge.textContent = `Scene: ${visuals.current.name}`;
         tracker.stop();
         midi.stop();
         audSpan.textContent = "off";
         camSpan.textContent = "off";
         midiSpan.textContent = "off";
         startBtn.disabled = false;
+        controlBus.reset();
     };
     startBtn.addEventListener("click", () => {
         void start().catch((e) => {
@@ -1621,6 +1782,8 @@ async function main() {
         ui.style.display = hidden ? "none" : "block";
         midiOverlay.style.display = hidden ? "none" : (midiOverlayWasOn ? "block" : "none");
         hud.style.display = hidden ? "none" : (hudOn ? "block" : "none");
+        videoWrap.style.opacity = hidden ? "0" : videoWrapBaseOpacity;
+        videoWrap.style.pointerEvents = hidden ? "none" : videoWrapBasePointerEvents;
     };
     hideUiBtn.addEventListener("click", () => {
         setUiHidden(!uiHidden);
@@ -1742,27 +1905,19 @@ async function main() {
                         }
                         audioUpdateTimer = null;
                     }
-                    void audio.stop();
+                    void audio?.stop();
                     audSpan.textContent = "off";
                 }
                 else {
                     audSpan.textContent = "starting";
                     applyAudioMode(audioMode);
-                    audio.setSafeMode(false);
-                    void audio.start();
+                    audio?.setSafeMode?.(false);
+                    void audio?.start();
                     audSpan.textContent = "on";
                     if (audioUpdateTimer === null && running) {
                         audioUpdateTimer = window.setInterval(() => {
                             try {
-                                if (!running || !audioOn)
-                                    return;
-                                const c = lastControlForAudio;
-                                if (!c)
-                                    return;
-                                const aT0 = performance.now();
-                                audio?.update(c);
-                                const aT1 = performance.now();
-                                tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                                runAudioTick();
                             }
                             catch {
                                 // ignore

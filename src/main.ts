@@ -1,6 +1,7 @@
 import "./style.css";
 
 import type { DroneWorkletEngine } from "./music/droneWorkletEngine";
+import type { HandsFrame, HandPose } from "./control/types";
 import { ControlBus } from "./control/controlBus";
 import { HandTracker } from "./vision/handTracker";
 import { VisualEngine } from "./visual/visualEngine";
@@ -59,6 +60,112 @@ async function main() {
 
   const overlayCanvas = el("canvas", "overlay");
   app.appendChild(overlayCanvas);
+
+  const mouseHandState = {
+    active: false,
+    hovering: false,
+    pinching: false,
+    pointerId: null as number | null,
+    x: 0.5,
+    y: 0.85,
+    lastX: 0.5,
+    lastY: 0.85,
+    speed: 0,
+    lastUpdate: performance.now()
+  };
+
+  const updateMouseHandFromEvent = (ev: PointerEvent) => {
+    const rect = overlayCanvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const normX = clamp01((ev.clientX - rect.left) / rect.width);
+    const normY = clamp01((ev.clientY - rect.top) / rect.height);
+    const now = performance.now();
+    const dt = Math.max(1e-3, (now - mouseHandState.lastUpdate) / 1000);
+    const dx = normX - mouseHandState.lastX;
+    const dy = normY - mouseHandState.lastY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    mouseHandState.speed = clamp01((dist / dt) / 2.2);
+    mouseHandState.x = normX;
+    mouseHandState.y = normY;
+    mouseHandState.lastX = normX;
+    mouseHandState.lastY = normY;
+    mouseHandState.lastUpdate = now;
+  };
+
+  const releaseMousePointer = () => {
+    window.removeEventListener("pointermove", handleCapturedPointerMove);
+    window.removeEventListener("pointerup", handleCapturedPointerUp);
+    window.removeEventListener("pointercancel", handleCapturedPointerUp);
+    mouseHandState.pointerId = null;
+  };
+
+  const handleCapturedPointerMove = (ev: PointerEvent) => {
+    if (ev.pointerId !== mouseHandState.pointerId) return;
+    updateMouseHandFromEvent(ev);
+  };
+
+  const handleCapturedPointerUp = (ev: PointerEvent) => {
+    if (ev.pointerId !== mouseHandState.pointerId) return;
+    mouseHandState.pinching = false;
+    releaseMousePointer();
+    if (!mouseHandState.hovering) {
+      mouseHandState.active = false;
+      mouseHandState.speed = 0;
+    }
+  };
+
+  overlayCanvas.addEventListener("pointerenter", (ev) => {
+    mouseHandState.hovering = true;
+    mouseHandState.active = true;
+    updateMouseHandFromEvent(ev);
+  });
+
+  overlayCanvas.addEventListener("pointerleave", () => {
+    mouseHandState.hovering = false;
+    if (!mouseHandState.pinching) {
+      mouseHandState.active = false;
+      mouseHandState.speed = 0;
+    }
+  });
+
+  overlayCanvas.addEventListener("pointermove", (ev) => {
+    if (!mouseHandState.hovering && !mouseHandState.pinching) return;
+    mouseHandState.active = true;
+    updateMouseHandFromEvent(ev);
+  });
+
+  overlayCanvas.addEventListener("pointerdown", (ev) => {
+    mouseHandState.hovering = true;
+    mouseHandState.active = true;
+    updateMouseHandFromEvent(ev);
+    if (ev.button !== 0) return;
+    mouseHandState.pinching = true;
+    mouseHandState.pointerId = ev.pointerId;
+    window.addEventListener("pointermove", handleCapturedPointerMove);
+    window.addEventListener("pointerup", handleCapturedPointerUp);
+    window.addEventListener("pointercancel", handleCapturedPointerUp);
+    ev.preventDefault();
+  });
+
+  const mergeHandsWithMouse = (frame: HandsFrame): HandsFrame => {
+    if (!mouseHandState.active) return frame;
+    const mouseHand: HandPose = {
+      label: "Right",
+      score: 1,
+      center: { x: mouseHandState.x, y: mouseHandState.y },
+      wrist: { x: mouseHandState.x, y: mouseHandState.y },
+      pinch: mouseHandState.pinching ? 1 : 0,
+      open: !mouseHandState.pinching,
+      fist: mouseHandState.pinching,
+      speed: mouseHandState.speed
+    };
+    const hands = frame.hands.filter((h) => h.label !== "Right");
+    hands.push(mouseHand);
+    return {
+      count: hands.length,
+      hands
+    };
+  };
 
   const ui = el("div", "ui");
   const panel = el("div", "panel");
@@ -1011,7 +1118,7 @@ async function main() {
         overlay.draw([]);
       }
 
-      const control = controlBus.update({ t, dt, hands });
+      const control = controlBus.update({ t, dt, hands: mergeHandsWithMouse(hands) });
 
       // Render the HUD meter at full rAF speed (independent from the throttled HUD text).
       // Uses lastAudioViz which is already throttled upstream.

@@ -54,8 +54,6 @@ class DroneProcessor extends AudioWorkletProcessor {
     bassEnv = 0;
     bassHz = 55;
     hatHp = 0;
-    bassLowHz = 65.41;
-    bassHighHz = 73.42;
     // Sunn O))) underlay (drone mode)
     doomPhase = 0;
     doomLfoPhase = 0;
@@ -124,8 +122,6 @@ class DroneProcessor extends AudioWorkletProcessor {
                 this.tickAmt = msg.tickAmt;
                 this.tickDecaySec = msg.tickDecay;
                 this.tickTone = msg.tickTone;
-                this.bassLowHz = msg.bassLowHz;
-                this.bassHighHz = msg.bassHighHz;
                 this.padFreq = msg.padFreq;
                 this.padGain = msg.padGain;
                 this.padBright = msg.padBright;
@@ -220,8 +216,8 @@ class DroneProcessor extends AudioWorkletProcessor {
                     const bassOn = this.step === 2 || this.step === 6 || this.step === 10 || this.step === 14;
                     if (bassOn) {
                         this.bassEnv = 1;
-                        const useAlt = this.step === 6 || this.step === 14;
-                        this.bassHz = useAlt ? this.bassHighHz : this.bassLowHz;
+                        // two-note-ish feel
+                        this.bassHz = (this.step === 6 || this.step === 14) ? 73.42 : 65.41; // D2 / C2
                     }
                 }
                 else {
