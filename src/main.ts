@@ -1094,14 +1094,20 @@ async function main() {
       handsSpan.textContent = String(hands.count);
 
       {
-        const nowMs = performance.now();
-        if (hands.count > 0) {
-          noHandsSinceMs = null;
-          handsPrompt.style.display = "none";
+        if (!camOn || !camTrackOn) {
+          handsPrompt.textContent = "Use mouse or connect camera";
+          handsPrompt.style.display = "block";
         } else {
-          if (noHandsSinceMs == null) noHandsSinceMs = nowMs;
-          const show = nowMs - noHandsSinceMs > 800;
-          handsPrompt.style.display = show ? "block" : "none";
+          handsPrompt.textContent = "Show your hands to play";
+          const nowMs = performance.now();
+          if (hands.count > 0) {
+            noHandsSinceMs = null;
+            handsPrompt.style.display = "none";
+          } else {
+            if (noHandsSinceMs == null) noHandsSinceMs = nowMs;
+            const show = nowMs - noHandsSinceMs > 800;
+            handsPrompt.style.display = show ? "block" : "none";
+          }
         }
       }
 
