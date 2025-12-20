@@ -758,6 +758,10 @@ async function main() {
     const prevMode = audioMode;
     audioMode = mode;
 
+    if (mode === "performance" && prevMode !== "performance") {
+      controlBus.reset();
+    }
+
     modeBtn.textContent = mode === "drone" ? "MODE: DRONE" : "MODE: RAVE";
     updateGestureHint(mode);
     audio?.setMode(mode);
@@ -1317,6 +1321,7 @@ async function main() {
     if (controlWithViz.events.reset) {
       audio?.reset();
       visuals.reset();
+      void audio?.setMode?.(audioMode);
     }
 
       const vT0 = performance.now();
@@ -1345,9 +1350,42 @@ async function main() {
 
   document.addEventListener("visibilitychange", () => {
     const hidden = document.visibilityState !== "visible";
+    if (audio) {
+      audio.setBackgroundMode(hidden);
+      if (hidden) {
+        if (audioUpdateTimer !== null) {
+          try {
+            window.clearInterval(audioUpdateTimer);
+          } catch {
+          }
+          audioUpdateTimer = null;
+        }
+        audioUpdateTimer = window.setInterval(() => {
+          try {
+            runAudioTick();
+          } catch {
+          }
+        }, 250);
+      } else {
+        if (audioUpdateTimer !== null) {
+          try {
+            window.clearInterval(audioUpdateTimer);
+          } catch {
+          }
+          audioUpdateTimer = null;
+        }
+        if (running && audioOn) {
+          audioUpdateTimer = window.setInterval(() => {
+            try {
+              runAudioTick();
+            } catch {
+            }
+          }, 33);
+        }
+      }
+    }
     if (hidden !== wasHidden) {
       wasHidden = hidden;
-      // Reset timers so returning to the tab doesn't produce a huge dt.
       lastT = performance.now();
       lastTickAt = performance.now();
     }
@@ -1539,12 +1577,27 @@ async function main() {
     }
   };
 
+  const runAudioTick = () => {
+    if (!running || !audioOn) return;
+    const c = lastControlForAudio;
+    if (!c) return;
+    if (audio && !audio.isRunning()) {
+      void audio.resume();
+    }
+    const aT0 = performance.now();
+    audio?.update(c);
+    const aT1 = performance.now();
+    tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+  };
+
   const start = async () => {
     startBtn.disabled = true;
     startBtn.textContent = "Entering...";
     camSpan.title = "";
     audSpan.title = "";
     midiSpan.title = "";
+
+    controlBus.reset();
 
     camSpan.textContent = "starting";
     try {
@@ -1634,13 +1687,7 @@ async function main() {
     if (audioOn) {
       audioUpdateTimer = window.setInterval(() => {
         try {
-          if (!running || !audioOn) return;
-          const c = lastControlForAudio;
-          if (!c) return;
-          const aT0 = performance.now();
-          audio?.update(c);
-          const aT1 = performance.now();
-          tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+          runAudioTick();
         } catch {
           // ignore
         }
@@ -1666,12 +1713,17 @@ async function main() {
       audioUpdateTimer = null;
     }
     await audio?.stop();
+    audio = null;
+    audioMode = "performance";
+    sceneBadge.textContent = `Scene: ${visuals.current.name}`;
     tracker.stop();
     midi.stop();
     audSpan.textContent = "off";
     camSpan.textContent = "off";
     midiSpan.textContent = "off";
     startBtn.disabled = false;
+
+    controlBus.reset();
   };
 
   startBtn.addEventListener("click", () => {
@@ -1828,24 +1880,18 @@ async function main() {
             }
             audioUpdateTimer = null;
           }
-          void audio.stop();
+          void audio?.stop();
           audSpan.textContent = "off";
         } else {
           audSpan.textContent = "starting";
           applyAudioMode(audioMode);
-          audio.setSafeMode(false);
-          void audio.start();
+          audio?.setSafeMode?.(false);
+          void audio?.start();
           audSpan.textContent = "on";
           if (audioUpdateTimer === null && running) {
             audioUpdateTimer = window.setInterval(() => {
               try {
-                if (!running || !audioOn) return;
-                const c = lastControlForAudio;
-                if (!c) return;
-                const aT0 = performance.now();
-                audio?.update(c);
-                const aT1 = performance.now();
-                tAudioMs = ema(tAudioMs, aT1 - aT0, 0.12);
+                runAudioTick();
               } catch {
                 // ignore
               }

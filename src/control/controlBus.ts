@@ -23,14 +23,26 @@ export class ControlBus {
   private leftWristVelX = 0;
 
   constructor() {
-    this.state = {
+    this.state = this.createDefaultState();
+  }
+
+  reset() {
+    this.state = this.createDefaultState();
+    this.bothOpenMs = 0;
+    this.lastSceneTriggerT = 0;
+    this.leftWristPrevX = null;
+    this.leftWristVelX = 0;
+  }
+
+  private createDefaultState(): ControlState {
+    return {
       t: 0,
       dt: 1 / 60,
 
       hands: { count: 0, hands: [] },
 
       rightX: 0.5,
-      rightY: 0.5,
+      rightY: 0.85,
       rightPinch: 0,
       rightSpeed: 0,
 
@@ -56,13 +68,13 @@ export class ControlBus {
     const left = findHand(hands, "Left");
     const right = findHand(hands, "Right");
 
-    const nextRightX = right ? clamp01(right.center.x) : this.state.rightX;
-    const nextRightY = right ? clamp01(1 - right.center.y) : this.state.rightY;
+    const nextRightX = right ? clamp01(right.center.x) : 0.5;
+    const nextRightY = right ? clamp01(1 - right.center.y) : 0.85;
     const nextRightPinch = right ? clamp01(right.pinch) : 0;
     const nextRightSpeed = right ? clamp01(right.speed) : 0;
 
-    const nextLeftX = left ? clamp01(left.center.x) : this.state.leftX;
-    const nextLeftY = left ? clamp01(1 - left.center.y) : this.state.leftY;
+    const nextLeftX = left ? clamp01(left.center.x) : 0.5;
+    const nextLeftY = left ? clamp01(1 - left.center.y) : 0.5;
     const nextLeftPinch = left ? clamp01(left.pinch) : 0;
     const nextLeftSpeed = left ? clamp01(left.speed) : 0;
 

@@ -28,18 +28,66 @@ function makeDriveCurve(amount: number) {
   return curve;
 }
 
+const HAT_LEVEL_BOOST = 1.35;
+const PERC_LEVEL_BOOST = 2.0;
+const PAD_GAIN_TRIM = 0.72;
+const LEAD_GAIN_TRIM = 0.68;
+const FX_FILTER_MIN_CUTOFF = 7200;
+
+const FREEMIDIS_GARAGE_STACKS: Record<string, number[]> = {
+  Freemidis2025_generated_progression_080_Dmin9: [62, 65, 69, 74],
+  Freemidis2025_generated_progression_081_Gsus13: [67, 70, 74, 79],
+  Freemidis2025_generated_progression_082_Bbmaj7: [70, 74, 77, 81],
+  Freemidis2025_generated_progression_083_Fadd9: [69, 72, 76, 81],
+  Freemidis2025_generated_progression_084_Csus2: [60, 62, 67, 72],
+  Freemidis2025_generated_progression_085_Ebmaj9: [63, 67, 70, 74],
+  Freemidis2025_generated_progression_086_Gmin11: [67, 70, 74, 77],
+  Freemidis2025_generated_progression_087_Abmaj9: [68, 72, 75, 79],
+  Freemidis2025_generated_progression_095_Cmaj9: [60, 64, 67, 71],
+  Freemidis2025_generated_progression_096_Am11: [57, 60, 64, 69],
+  Freemidis2025_generated_progression_097_Fmaj9: [53, 57, 60, 65],
+  Freemidis2025_generated_progression_098_G13: [55, 59, 62, 67]
+};
+
+const FREEMIDIS_TECHNO_STACKS: Record<string, number[]> = {
+  Freemidis2025_generated_progression_080_Dmin9: [38, 50, 57, 62],
+  Freemidis2025_generated_progression_081_Gsus13: [43, 48, 55, 62],
+  Freemidis2025_generated_progression_082_Bbmaj7: [46, 51, 58, 65],
+  Freemidis2025_generated_progression_083_Fadd9: [41, 46, 53, 60],
+  Freemidis2025_generated_progression_084_Csus2: [36, 43, 48, 55],
+  Freemidis2025_generated_progression_085_Ebmaj9: [39, 46, 51, 58],
+  Freemidis2025_generated_progression_086_Gmin11: [43, 50, 55, 62],
+  Freemidis2025_generated_progression_087_Abmaj9: [44, 51, 56, 63],
+  Freemidis2025_generated_progression_095_Cmaj9: [48, 52, 55, 60, 67],
+  Freemidis2025_generated_progression_096_Am11: [45, 52, 57, 60, 64],
+  Freemidis2025_generated_progression_097_Fmaj9: [41, 53, 57, 60, 65],
+  Freemidis2025_generated_progression_098_G13: [43, 50, 57, 62, 67]
+};
+
 type HarmonyClip = {
   bars: number;
   padLow: number;
   padHigh: number;
   lead: number;
   source: string;
+  garageStackKey?: keyof typeof FREEMIDIS_GARAGE_STACKS;
+  technoStackKey?: keyof typeof FREEMIDIS_TECHNO_STACKS;
+  triggerChance?: number;
+  fallback?: {
+    padLow: number;
+    padHigh: number;
+    lead: number;
+    garageStackKey?: keyof typeof FREEMIDIS_GARAGE_STACKS;
+    technoStackKey?: keyof typeof FREEMIDIS_TECHNO_STACKS;
+  };
 };
 
 export class DroneWorkletEngine {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
+  private masterGainTarget = 0.48;
+  private lastMasterGainApplied = 0.48;
 
   private limiter: DynamicsCompressorNode | null = null;
   private preClip: GainNode | null = null;
@@ -139,6 +187,8 @@ export class DroneWorkletEngine {
 
   private pulse = 0;
 
+  private lfoHz = 0;
+
   private fxHold = 0;
 
   private sampleActivityAtMs: Record<string, number> = {
@@ -190,12 +240,15 @@ export class DroneWorkletEngine {
   private garageMelOscs: Array<{ osc: OscillatorNode; gain: GainNode; ratio: number }> = [];
   private garageMelNotesHz: number[] = [midiToHz(61), midiToHz(64), midiToHz(67), midiToHz(69)];
   private readonly garageMelodyPattern = [
-    1.0, 0, 0.65, 0,
-    0.5, 0, 0.85, 0,
-    0.55, 0, 0.4, 0,
-    0.6, 0, 0.35, 0
+    1.0, 0.08, 0.72, 0,
+    0.46, 0.05, 0.88, 0,
+    0.58, 0.12, 0.42, 0,
+    0.64, 0.10, 0.38, 0.05
   ];
-  private readonly garageMelodyNotes = [2, 0, 1, 0, 3, 1, 2, 0, 1, 3, 2, 1, 3, 0, 2, 1];
+  private readonly garageMelodyNotes = [0, 3, 1, 2, 4, 1, 3, 0, 2, 4, 3, 1, 4, 0, 2, 1];
+  private garageLastTriggeredMs = 0;
+  private readonly garageDominanceWindowMs = 1400;
+  private technoSuppressedUntilMs = 0;
 
   private padEnv = 0;
   private leadEnv = 0;
@@ -209,6 +262,9 @@ export class DroneWorkletEngine {
   private padBaseHz = 110;
   private padChordLowHz = midiToHz(49);
   private padChordHighHz = midiToHz(56);
+  private technoStackNotesHz: number[] = [];
+  private stepHitBudget = 0;
+  private stepHitCount = 0;
 
   private bassBus: GainNode | null = null;
   private bassFilter: BiquadFilterNode | null = null;
@@ -247,27 +303,140 @@ export class DroneWorkletEngine {
   private sceneFxBoost = 0;
   private scenePadBrightBoost = 0;
   private readonly harmonyProgression: HarmonyClip[] = [
-    // Intro – Locrian tension with quick passing colors
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "LOC_P2_I°" },
-    { bars: 2, padLow: 52, padHigh: 59, lead: 64, source: "LOC_P2_iii_pass" },
-    { bars: 2, padLow: 50, padHigh: 57, lead: 62, source: "LOC_P2_ii_shade" },
-    { bars: 4, padLow: 47, padHigh: 54, lead: 59, source: "Borrow_bVII_Bmaj" },
-    // Drive lift – borrowing IV/VI colors for movement
-    { bars: 4, padLow: 54, padHigh: 61, lead: 66, source: "LOC_P13_IV" },
-    { bars: 2, padLow: 57, padHigh: 64, lead: 69, source: "LOC_P13_VI" },
-    { bars: 2, padLow: 52, padHigh: 60, lead: 67, source: "AEOLIAN_iii_sus2" },
-    { bars: 4, padLow: 55, padHigh: 62, lead: 67, source: "LOC_P13_V_add9" },
-    // Peak – chromatic punches and modal mixture
-    { bars: 4, padLow: 49, padHigh: 58, lead: 63, source: "MIXOL_bVI_riser" },
-    { bars: 2, padLow: 56, padHigh: 63, lead: 68, source: "CHROMA_augPivot" },
-    { bars: 2, padLow: 52, padHigh: 59, lead: 64, source: "Return_iii" },
-    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "Return_ii" },
-    // Finale – upper register sparkle and resolution
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "LOC_I°_resolve" },
-    { bars: 4, padLow: 61, padHigh: 68, lead: 73, source: "UPPER_ix_lift" },
-    { bars: 2, padLow: 54, padHigh: 62, lead: 67, source: "DROP_IV_minor" },
-    { bars: 2, padLow: 50, padHigh: 57, lead: 62, source: "DROP_ii_minor" },
-    { bars: 4, padLow: 47, padHigh: 54, lead: 59, source: "OUTRO_bVII_hold" }
+    {
+      bars: 4,
+      padLow: 50,
+      padHigh: 59,
+      lead: 62,
+      source: "DarkRave_Dm9",
+      garageStackKey: "Freemidis2025_generated_progression_080_Dmin9",
+      technoStackKey: "Freemidis2025_generated_progression_080_Dmin9"
+    },
+    {
+      bars: 2,
+      padLow: 55,
+      padHigh: 64,
+      lead: 67,
+      source: "DarkRave_Gsus13",
+      garageStackKey: "Freemidis2025_generated_progression_081_Gsus13",
+      technoStackKey: "Freemidis2025_generated_progression_081_Gsus13"
+    },
+    {
+      bars: 2,
+      padLow: 58,
+      padHigh: 65,
+      lead: 70,
+      source: "DarkRave_Bbmaj7",
+      garageStackKey: "Freemidis2025_generated_progression_082_Bbmaj7",
+      technoStackKey: "Freemidis2025_generated_progression_082_Bbmaj7"
+    },
+    {
+      bars: 4,
+      padLow: 53,
+      padHigh: 62,
+      lead: 69,
+      source: "DarkRave_Fadd9",
+      garageStackKey: "Freemidis2025_generated_progression_083_Fadd9",
+      technoStackKey: "Freemidis2025_generated_progression_083_Fadd9"
+    },
+    {
+      bars: 2,
+      padLow: 48,
+      padHigh: 60,
+      lead: 64,
+      source: "DarkRave_Csus2",
+      garageStackKey: "Freemidis2025_generated_progression_084_Csus2",
+      technoStackKey: "Freemidis2025_generated_progression_084_Csus2"
+    },
+    {
+      bars: 2,
+      padLow: 51,
+      padHigh: 63,
+      lead: 70,
+      source: "DarkRave_Ebmaj9",
+      garageStackKey: "Freemidis2025_generated_progression_085_Ebmaj9",
+      technoStackKey: "Freemidis2025_generated_progression_085_Ebmaj9"
+    },
+    {
+      bars: 2,
+      padLow: 55,
+      padHigh: 66,
+      lead: 74,
+      source: "DarkRave_Gmin11",
+      garageStackKey: "Freemidis2025_generated_progression_086_Gmin11",
+      technoStackKey: "Freemidis2025_generated_progression_086_Gmin11"
+    },
+    {
+      bars: 2,
+      padLow: 56,
+      padHigh: 68,
+      lead: 75,
+      source: "DarkRave_Abmaj9",
+      garageStackKey: "Freemidis2025_generated_progression_087_Abmaj9",
+      technoStackKey: "Freemidis2025_generated_progression_087_Abmaj9"
+    },
+    {
+      bars: 4,
+      padLow: 48,
+      padHigh: 60,
+      lead: 67,
+      source: "DarkRave_Cmaj9",
+      garageStackKey: "Freemidis2025_generated_progression_095_Cmaj9",
+      technoStackKey: "Freemidis2025_generated_progression_095_Cmaj9"
+    },
+    {
+      bars: 2,
+      padLow: 45,
+      padHigh: 57,
+      lead: 69,
+      source: "DarkRave_Am11",
+      garageStackKey: "Freemidis2025_generated_progression_096_Am11",
+      technoStackKey: "Freemidis2025_generated_progression_096_Am11"
+    },
+    {
+      bars: 2,
+      padLow: 41,
+      padHigh: 55,
+      lead: 65,
+      source: "DarkRave_Fmaj9",
+      garageStackKey: "Freemidis2025_generated_progression_097_Fmaj9",
+      technoStackKey: "Freemidis2025_generated_progression_097_Fmaj9"
+    },
+    {
+      bars: 2,
+      padLow: 43,
+      padHigh: 59,
+      lead: 69,
+      source: "DarkRave_G13",
+      garageStackKey: "Freemidis2025_generated_progression_098_G13",
+      technoStackKey: "Freemidis2025_generated_progression_098_G13"
+    },
+    {
+      bars: 2,
+      padLow: 52,
+      padHigh: 60,
+      lead: 64,
+      source: "DarkRave_Dm9_Reprise",
+      garageStackKey: "Freemidis2025_generated_progression_080_Dmin9",
+      technoStackKey: "Freemidis2025_generated_progression_080_Dmin9",
+      triggerChance: 0.5,
+      fallback: {
+        padLow: 52,
+        padHigh: 59,
+        lead: 64,
+        garageStackKey: "Freemidis2025_generated_progression_082_Bbmaj7",
+        technoStackKey: "Freemidis2025_generated_progression_082_Bbmaj7"
+      }
+    },
+    {
+      bars: 4,
+      padLow: 47,
+      padHigh: 54,
+      lead: 59,
+      source: "DarkRave_DroneOutro",
+      garageStackKey: "Freemidis2025_generated_progression_081_Gsus13",
+      technoStackKey: "Freemidis2025_generated_progression_081_Gsus13"
+    }
   ];
   private harmonyIndex = 0;
   private harmonyBarStart = 0;
@@ -280,6 +449,8 @@ export class DroneWorkletEngine {
   private macroPadLiftLevel = 0;
   private macroPercBoostLevel = 0;
   private macroFxBlastLevel = 0;
+  private warmupStepsRemaining = 0;
+  private readonly warmupTotalSteps = 64;
 
   private resetArrangementStages() {
     this.arrangementStage = 0;
@@ -294,6 +465,16 @@ export class DroneWorkletEngine {
     this.harmonyBarStart = 0;
     this.applyHarmonyState(this.harmonyIndex);
   }
+
+  private resetRealtimeState() {
+    this.gate = 0;
+    this.currentMidi = null;
+    this.midiNote = null;
+    this.midiPadNote = null;
+    this.midiLeadNote = null;
+    this.midiVel = 0;
+  }
+
   private applyFlowScene(scene: 0 | 1 | 2 | 3) {
     this.flowScene = scene;
     if (scene === 0) {
@@ -323,6 +504,98 @@ export class DroneWorkletEngine {
     }
   }
 
+  private isTechnoSuppressed() {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    return now < this.technoSuppressedUntilMs;
+  }
+
+  private isGarageActive(nowMs: number) {
+    return nowMs - this.garageLastTriggeredMs < 400;
+  }
+
+  private getTechnoNoteHz(offset: number) {
+    if (!this.technoStackNotesHz.length) return this.padChordLowHz;
+    const len = this.technoStackNotesHz.length;
+    const idx = ((this.raveStep + offset) % len + len) % len;
+    return this.technoStackNotesHz[idx] ?? this.padChordLowHz;
+  }
+
+
+  private synthVoiceBudget() {
+    const stage = this.stageMix(2, 4);
+    if (stage >= 0.85) return 3;
+    if (stage >= 0.45) return 2;
+    return 1;
+  }
+
+  private enforceSynthBudget(midiPadOn: boolean, midiLeadOn: boolean) {
+    let padActive = this.padGate > 0.05 && this.padGain > 1e-3;
+    let leadActive = this.leadGain > 1e-3 && this.leadProb > 0;
+    let garageActive = (this.garageMelBus?.gain.value ?? 0) > 0.02;
+    const budget = this.synthVoiceBudget();
+    let voices = (padActive ? 1 : 0) + (leadActive ? 1 : 0) + (garageActive ? 1 : 0);
+    if (voices <= budget) return;
+
+    if (garageActive && voices > budget && this.garageMelBus) {
+      try {
+        this.garageMelBus.gain.value *= this.backgroundMode ? 0.2 : 0.35;
+      } catch {
+      }
+      if (this.garageMelBus.gain.value < 0.01) {
+        garageActive = false;
+        voices--;
+      }
+    }
+
+    if (!midiLeadOn && leadActive && voices > budget) {
+      this.leadGain = 0;
+      this.leadProb = 0;
+      leadActive = false;
+      voices--;
+    }
+
+    if (!midiPadOn && padActive && voices > budget) {
+      this.padGain = 0;
+      this.padGate = 0;
+      padActive = false;
+      voices--;
+    }
+  }
+
+  private registerVoiceHit() {
+    this.stepHitCount++;
+  }
+
+  private applyVoiceBudgetRelief(nowMs: number) {
+    const budget = this.backgroundMode ? 2 : 4;
+    const overload = Math.max(0, this.stepHitCount - budget);
+    const target =
+      overload > 0
+        ? clamp(0.48 - overload * 0.06, this.backgroundMode ? 0.24 : 0.32, 0.48)
+        : 0.48;
+    if (Math.abs(target - this.masterGainTarget) > 0.005) {
+      this.masterGainTarget = target;
+      const ctx = this.ctx;
+      if (ctx && this.master) {
+        const t = ctx.currentTime;
+        try {
+          this.master.gain.setTargetAtTime(target, t, 0.08);
+        } catch {
+          this.master.gain.value = target;
+        }
+        this.lastMasterGainApplied = target;
+      }
+    }
+    if (overload >= 1) {
+      this.padGain *= 0.85;
+      this.leadGain *= 0.8;
+    }
+    if (overload >= 2) {
+      this.autoPadGainTarget *= 0.75;
+      this.autoLeadGainTarget *= 0.65;
+    }
+  }
+
   private applyHarmonyState(index: number) {
     const chord = this.harmonyProgression[index] ?? this.harmonyProgression[0]!;
     this.padChordLowHz = midiToHz(chord.padLow);
@@ -334,14 +607,123 @@ export class DroneWorkletEngine {
     const root = chord.padLow;
     const upper = chord.padHigh;
     const lead = chord.lead;
-    const technoStack = [
-      root - 5,          // sub fifth for tension
-      root + 6,          // tritone bite
-      upper + 2,         // lifted add9 color
-      lead + 7,          // soaring 11th-ish
-      root + 11          // sharp fifth shimmer
-    ];
-    this.garageMelNotesHz = technoStack.map((n) => midiToHz(n));
+    const technoStack =
+      (chord.technoStackKey && FREEMIDIS_TECHNO_STACKS[chord.technoStackKey]) ||
+      [
+        root - 5,
+        root + 6,
+        upper + 2,
+        lead + 7,
+        root + 11
+      ];
+    const garageStack =
+      (chord.garageStackKey && FREEMIDIS_GARAGE_STACKS[chord.garageStackKey]) || technoStack;
+    this.garageMelNotesHz = garageStack.map((n) => midiToHz(n));
+    this.technoStackNotesHz = technoStack.map((n) => midiToHz(n));
+  }
+
+  private resetPerformanceState() {
+    this.resetArrangementStages();
+    this.lastError = null;
+    this.resetRealtimeState();
+    this.idleAmt = 0;
+    this.lastRightPinch = 0.75;
+    this.lastControlHandsCount = 0;
+    this.pulse = 0;
+    this.autoPadHoldUntilMs = 0;
+    this.autoLeadHoldUntilMs = 0;
+    this.autoPadGainTarget = 0;
+    this.autoLeadGainTarget = 0;
+    this.autoPadFreq = this.padChordLowHz;
+    this.autoLeadFreq = this.leadBaseHz;
+    this.lastAutoPadBar = -8;
+    this.lastAutoLeadBar = -8;
+    this.macroPadLiftUntilMs = 0;
+    this.macroPercBoostUntilMs = 0;
+    this.macroFxBlastUntilMs = 0;
+    this.macroPadLiftLevel = 0;
+    this.macroPercBoostLevel = 0;
+    this.macroFxBlastLevel = 0;
+    this.warmupStepsRemaining = this.warmupTotalSteps;
+    this.fxHold = 0;
+    this.raveBar = 0;
+    this.raveStep = 0;
+    this.raveSection = 0;
+    this.ravePrevSection = 0;
+    this.raveNextSectionBar = 4;
+    this.raveSectionChangeT = this.ctx?.currentTime ?? 0;
+    this.raveFillType = 0;
+    this.raveFillUntilBar = 0;
+    this.raveGroove = 0;
+    this.raveNextGrooveBar = 2;
+    this.raveBarVariant = 0;
+    this.raveVariantUntilBar = 0;
+    this.raveNextVariantBar = 4;
+    this.raveLastVariantBar = 0;
+    this.forcedHalfTime = false;
+    this.forcedQuarterTime = false;
+    this.lastDrumLpFreq = 0;
+    this.lastDrumGain = 0;
+    this.raveRand = ((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) | 0) || 0x12345678;
+    const now = this.ctx?.currentTime ?? 0;
+    this.raveNextStepT = now + 0.05;
+  }
+
+  private async ensureContextRunning() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    if (ctx.state === "running") return;
+    if (!this.resumeContextPromise) {
+      this.resumeContextPromise = ctx
+        .resume()
+        .catch((err) => {
+          this.lastError = err instanceof Error ? err.message : String(err);
+          throw err;
+        })
+        .finally(() => {
+          this.resumeContextPromise = null;
+        });
+    }
+    await this.resumeContextPromise;
+  }
+
+  isRunning() {
+    return !!this.ctx && this.ctx.state === "running";
+  }
+
+  resume() {
+    return this.ensureContextRunning();
+  }
+
+  setBackgroundMode(on: boolean) {
+    if (this.backgroundMode === on) return;
+    this.backgroundMode = on;
+    if (on) {
+      this.stopRaveScheduler();
+      if (this.ctx && this.ctx.state === "running") {
+        void this.ctx.suspend().catch(() => undefined);
+      }
+      if (this.master) {
+        try {
+          this.master.gain.setTargetAtTime(0.08, this.ctx?.currentTime ?? 0, 0.25);
+        } catch {
+          this.master.gain.value = 0.08;
+        }
+      }
+    } else {
+      void this.ensureContextRunning().then(() => {
+        if (this.mode === "performance") {
+          this.ensureRaveScheduler();
+        }
+        if (this.master) {
+          try {
+            this.master.gain.setTargetAtTime(0.48, this.ctx?.currentTime ?? 0, 0.25);
+          } catch {
+            this.master.gain.value = 0.48;
+          }
+        }
+      });
+    }
   }
 
   private updateHarmonyTimeline(bar: number) {
@@ -416,6 +798,7 @@ export class DroneWorkletEngine {
     const prev = this.sampleActivityLevel[name] ?? 0;
     const g = Math.max(0, Math.min(1, gain));
     this.sampleActivityLevel[name] = Math.max(prev * 0.6, g);
+    this.registerVoiceHit();
   }
 
   private rand01() {
@@ -545,6 +928,7 @@ export class DroneWorkletEngine {
   private started = false;
 
   private mode: "performance" | "drone" = "performance";
+  private backgroundMode = false;
 
   private gate = 0;
   private currentMidi: number | null = null;
@@ -587,6 +971,7 @@ export class DroneWorkletEngine {
   private droneGtrAutoTarget = 0;
   private droneGtrNextSwellT = 0;
   private droneGtrSwellUntilT = 0;
+  private resumeContextPromise: Promise<void> | null = null;
 
   private async loadSample(ctx: AudioContext, url: string) {
     const res = await fetch(url);
@@ -662,10 +1047,10 @@ export class DroneWorkletEngine {
     return urls[0] ?? null;
   }
 
-  private async ensureDroneStemsLoaded() {
+  private async ensureDroneStemsLoaded(force = false) {
     if (!this.ctx) return;
     // Allow retrying missing stems (e.g. guitar loaded but bass failed earlier).
-    if (this.sampleDroneBass && this.sampleDroneGuitar) {
+    if (!force && this.sampleDroneBass && this.sampleDroneGuitar) {
       this.droneStemsLoaded = true;
       return;
     }
@@ -1056,7 +1441,7 @@ export class DroneWorkletEngine {
     this.markSample("lead", accent);
   }
 
-  private maybeTriggerAutoSynths(section: number, dens: number) {
+  private maybeTriggerAutoSynths(section: number, dens: number, step: number) {
     if (this.mode !== "performance") return;
     const synthStage = this.stageMix(2, 4);
     if (synthStage < 0.1) return;
@@ -1064,12 +1449,18 @@ export class DroneWorkletEngine {
     if (!this.midiPadNote && this.raveTotalBars >= 4) {
       const gap = section >= 2 ? 4 : 8;
       if (this.raveBar - this.lastAutoPadBar >= gap) {
-        this.triggerAutoPad(nowMs, section, dens);
+        this.triggerAutoPad(nowMs, section, dens, step);
+      }
+    }
+    if (!this.midiLeadNote && this.raveTotalBars >= 8) {
+      const gap = section >= 2 ? 2 : 4;
+      if (this.raveBar - this.lastAutoLeadBar >= gap) {
+        this.triggerAutoLead(nowMs, section, dens, step);
       }
     }
   }
 
-  private triggerAutoPad(nowMs: number, section: number, dens: number) {
+  private triggerAutoPad(nowMs: number, section: number, dens: number, step: number) {
     const sustain = 4200 + section * 1200 + dens * 800;
     const gain = clamp(0.18 + section * 0.12 + dens * 0.18, 0, 0.6);
     const bright = clamp(0.45 + section * 0.18 + dens * 0.1, 0, 1);
@@ -1077,8 +1468,30 @@ export class DroneWorkletEngine {
     this.autoPadHoldUntilMs = nowMs + sustain;
     this.autoPadGainTarget = gain;
     this.autoPadBright = bright;
-    this.autoPadFreq = useHigh ? this.padChordHighHz : this.padChordLowHz;
+    const padHz =
+      this.technoStackNotesHz.length > 0
+        ? this.technoStackNotesHz[step % this.technoStackNotesHz.length]
+        : useHigh
+          ? this.padChordHighHz
+          : this.padChordLowHz;
+    this.autoPadFreq = padHz;
     this.lastAutoPadBar = this.raveBar;
+  }
+
+  private triggerAutoLead(nowMs: number, section: number, dens: number, step: number) {
+    const sustain = 2600 + section * 800 + dens * 600;
+    const gain = clamp(0.12 + section * 0.10 + dens * 0.15, 0, 0.4);
+    const bright = clamp(0.35 + section * 0.25 + dens * 0.2, 0, 1);
+    const noteIdx = (section >= 2 && this.rand01() > 0.35) ? 2 : 0;
+    const leadHz =
+      this.technoStackNotesHz.length > 0
+        ? this.technoStackNotesHz[(step + noteIdx) % this.technoStackNotesHz.length]
+        : this.leadBaseHz;
+    this.autoLeadHoldUntilMs = nowMs + sustain;
+    this.autoLeadGainTarget = gain;
+    this.autoLeadBright = bright;
+    this.autoLeadFreq = leadHz;
+    this.lastAutoLeadBar = this.raveBar;
   }
 
   private triggerBassNote(time: number, weight: number, step: number, section: number, dens: number) {
@@ -1154,11 +1567,9 @@ export class DroneWorkletEngine {
       if (!this.started) return;
 
       const now = this.ctx.currentTime;
-      // In drone mode, don't run the RAVE scheduler or mark drum activity (avoids kick light).
+      // In drone mode, pause scheduling but keep timeline state so we resume seamlessly.
       if (this.mode !== "performance") {
         this.raveNextStepT = now;
-        this.raveStep = 0;
-        this.raveBar = 0;
         return;
       }
 
@@ -1200,8 +1611,8 @@ export class DroneWorkletEngine {
     this.raveTimer = window.setInterval(() => {
       try {
         tick();
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error("rave scheduler tick failed", err);
       }
     }, 25);
   }
@@ -1276,18 +1687,37 @@ export class DroneWorkletEngine {
   private scheduleRaveStep(time: number, step: number) {
     // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
     // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
+    const warmup = this.warmupStepsRemaining > 0;
     let dens = Math.min(1, Math.max(0, this.lastRightPinch));
+    const autoDens = clamp(0.35 + this.stageMix(1, 4) * 0.5 + this.stageMix(2, 4) * 0.15, 0.35, 0.95);
     if (dens < 0.05) {
-      dens = clamp(this.stageMix(1, 4) * 0.8, 0, 0.85);
+      dens = autoDens;
+    } else {
+      dens = Math.max(dens, autoDens * 0.65);
+    }
+    if (this.raveTotalBars < 8) {
+      dens = Math.max(dens, 0.42);
+    }
+    if (warmup) {
+      dens = Math.max(dens, 0.7);
     }
     const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
     const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
     const introSlope = clamp(this.raveTotalBars / Math.max(1, this.stageKickBar), 0, 1);
     const kickMix = Math.min(1, this.stageMix(1, 4) + introSlope * 0.5);
-    const hatMix = Math.min(1, kickMix * hatBoost);
     const percStage = this.stageMix(1, 4);
+    const hatBase = clamp(0.14 + percStage * 0.5 + this.macroPercBoostLevel * 0.4, 0, 1);
+    let hatMix = Math.max(hatBase, Math.min(1, kickMix * hatBoost));
+    if (this.raveTotalBars < 8) {
+      hatMix = Math.max(hatMix, 0.65);
+    }
+    if (warmup) {
+      hatMix = Math.max(hatMix, 0.9);
+    }
+    hatMix = Math.min(1, hatMix);
     const percMixBase = (percStage * 0.35) + clamp((kickMix - 0.25) / 0.75, 0, 1);
-    const percMix = Math.min(1, percMixBase) * percBoost;
+    const percFloor = clamp(0.05 + percStage * 0.3, 0, 0.75);
+    const percMix = Math.max(percFloor, Math.min(1, percMixBase)) * percBoost;
     let kickAccent = 1;
     const triggerKick = (when: number, gain: number) => {
       if (kickMix <= 0.02) return;
@@ -1299,7 +1729,7 @@ export class DroneWorkletEngine {
     const fillOn = this.raveFillUntilBar > bar;
     const groove = this.raveGroove | 0;
 
-    this.maybeTriggerAutoSynths(section, dens);
+    this.maybeTriggerAutoSynths(section, dens, step);
 
     const variantOn = this.raveVariantUntilBar > bar;
     const variant = variantOn ? (this.raveBarVariant | 0) : 0;
@@ -1431,12 +1861,15 @@ export class DroneWorkletEngine {
     }
 
     // Hats
-    const hatBreakMix = (inBreak ? hatMix * 0.6 : hatMix) * hatMixScale;
+    let hatBreakMix = Math.max(0.12, (inBreak ? hatMix * 0.6 : hatMix) * hatMixScale) * HAT_LEVEL_BOOST;
+    if (warmup) {
+      hatBreakMix = Math.max(hatBreakMix, 0.75);
+    }
     const percBreakMix = (inBreak ? percMix * 0.55 : percMix) * percMixScale;
 
     if (offHat && this.sampleHat && hatBreakMix > 0.02) {
       // Base velocity with RNG variation
-      const baseV = section === 0 ? 0.16 : section === 1 ? 0.18 : 0.205;
+      const baseV = section === 0 ? 0.22 : section === 1 ? 0.24 : 0.28;
       const v = (baseV + (this.rand01() - 0.5) * 0.04) * hatBreakMix; // ±0.02 variation
       const r = 0.98 + this.rand01() * 0.06; // 0.98–1.04 pitch variation
       if (v > 0.001) {
@@ -1472,7 +1905,7 @@ export class DroneWorkletEngine {
     if (hat16 && this.sampleHat && hatBreakMix > 0.02) {
       const on = (section >= 1 && dens > 0.35) || (section >= 2 && dens > 0.22);
       if (on) {
-        const v = (0.045 + 0.085 * dens + (this.rand01() - 0.5) * 0.04) * hatBreakMix;
+        const v = (0.065 + 0.11 * dens + (this.rand01() - 0.5) * 0.04) * hatBreakMix;
         const r = 1.03 + 0.03 * section + this.rand01() * 0.05;
         if (v > 0.001) {
           this.markSample("hat", v);
@@ -1485,7 +1918,7 @@ export class DroneWorkletEngine {
     if (openHat && this.sampleOpenHat && !inBreak) {
       const m = Math.min(1, Math.max(0, (dens - 0.35) / 0.65));
       if (section >= 2 && m > 0.06 && hatMix > 0.02) {
-        const v = (0.06 + 0.12 * m + (this.rand01() - 0.5) * 0.05) * hatMix;
+        const v = (0.08 + 0.16 * m + (this.rand01() - 0.5) * 0.05) * hatMix;
         const r = 0.96 + this.rand01() * 0.08;
         if (v > 0.001) {
           this.markSample("openhat", v);
@@ -1496,7 +1929,7 @@ export class DroneWorkletEngine {
 
     // Rim/snare: keep it minimal, no clap
     if (rim && this.sampleRim && percBreakMix > 0.02) {
-      if (section >= 1 && dens > 0.15) {
+      if (percMix > 0.02 && percMixScale > 0 && this.sampleRim && rim) {
         const v = (0.08 + 0.10 * dens) * percBreakMix;
         this.markSample("rim", v);
         this.fireSample(time, this.sampleRim, v, 1.0);
@@ -1513,7 +1946,7 @@ export class DroneWorkletEngine {
 
     if (!fillOn && this.sampleSnare && groove === 2 && section >= 2 && dens > 0.35 && percBreakMix > 0.02) {
       if (step === 11) {
-        const v = (0.06 + 0.05 * dens) * percBreakMix;
+        const v = (0.06 + 0.05 * dens) * percBreakMix * HAT_LEVEL_BOOST;
         this.markSample("snare", v);
         this.fireSample(time + 0.002, this.sampleSnare, v, 1.0);
       }
@@ -1532,10 +1965,19 @@ export class DroneWorkletEngine {
       this.fireSample(time, this.sampleRim, v, 1.0);
     }
 
+    if (this.warmupStepsRemaining > 0) {
+      this.warmupStepsRemaining--;
+    }
+
     const garageWeight = this.garageMelodyPattern[step] ?? 0;
+    const nowMs = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const garageDominant = nowMs - this.garageLastTriggeredMs < this.garageDominanceWindowMs;
+    const technoAllowed = !this.isTechnoSuppressed();
     if (!garageMute && garageWeight > 0 && !inBreak && section >= 1) {
       const dens = Math.min(1, Math.max(0, this.lastRightPinch));
       this.triggerGarageMelody(time, garageWeight, step, dens, section);
+      this.garageLastTriggeredMs = nowMs;
+      this.technoSuppressedUntilMs = nowMs + this.garageDominanceWindowMs;
     }
 
     const bassWeight = this.bassPattern[step] ?? 0;
@@ -1547,6 +1989,8 @@ export class DroneWorkletEngine {
       this.triggerBassNote(time, weight, step, section, dens);
       this.markSample("bass", Math.min(1, weight * 0.5));
     }
+
+    this.applyVoiceBudgetRelief(nowMs);
   }
 
   async start() {
@@ -1554,7 +1998,8 @@ export class DroneWorkletEngine {
 
     const ctx = new AudioContext({ latencyHint: "playback" });
     this.ctx = ctx;
-    this.resetArrangementStages();
+    this.resetPerformanceState();
+    await this.ensureContextRunning();
 
     // Worklet module: prefer TS in dev (hot reload) and fall back to bundled JS for hosted builds.
     const workletUrl = (ext: "ts" | "js") => new URL(`./worklets/droneProcessor.${ext}`, import.meta.url);
@@ -1711,9 +2156,9 @@ export class DroneWorkletEngine {
 
     // Ensure audio starts immediately after user gesture.
     if (ctx.state === "suspended") {
-      await ctx.resume();
-    }
+      }
 
+    await this.ensureContextRunning();
     this.started = true;
 
     // Seed drone guitar auto-swell scheduler.
@@ -1722,14 +2167,14 @@ export class DroneWorkletEngine {
     this.droneGtrAuto = 0;
     this.droneGtrAutoTarget = 0;
 
-    // Kick off sample loading (async) and scheduler.
-    void this.ensureSamplesLoaded();
+    // Kick off sample loading (hat/kick must exist before scheduler starts).
+    await this.ensureSamplesLoaded();
     void this.ensureDroneStemsLoaded();
     this.ensureRaveScheduler();
   }
 
-  private async ensureSamplesLoaded() {
-    if (this.samplesLoaded) return;
+  private async ensureSamplesLoaded(force = false) {
+    if (!force && this.samplesLoaded && this.sampleKick && this.sampleHat) return;
     if (this.loadingSamples) return await this.loadingSamples;
     if (!this.ctx) return;
 
@@ -1824,6 +2269,7 @@ export class DroneWorkletEngine {
     this.ctx = null;
     this.lastParamsSentAt = 0;
     this.idleAmt = 0;
+    this.resumeContextPromise = null;
     this.node = null;
     this.master = null;
     this.limiter = null;
@@ -1860,6 +2306,15 @@ export class DroneWorkletEngine {
     this.droneGtrADrive = null;
     this.droneGtrAComp = null;
     this.started = false;
+
+    this.samplesLoaded = false;
+    this.loadingSamples = null;
+    this.sampleKick = null;
+    this.sampleHat = null;
+    this.sampleClap = null;
+    this.sampleSnare = null;
+    this.sampleRim = null;
+    this.sampleOpenHat = null;
   }
 
   private updateFromControl(control: ControlState) {
@@ -1954,14 +2409,14 @@ export class DroneWorkletEngine {
       if (midiPadOn) {
         // map note 42/44 to pad
         const n = this.midiPadNote!;
-        this.padGain = 0.24 * synthStage;
+        this.padGain = 0.24 * synthStage * PAD_GAIN_TRIM;
         this.padGate = synthStage > 0.05 ? 1 : 0;
         const padHz = n === 44 ? this.padChordHighHz : this.padChordLowHz;
         this.padFreq = padHz;
         this.padBright = 0.52 + synthStage * 0.18;
         this.padDetune = 0.01;
       } else if (autoPadActive) {
-        this.padGain = this.autoPadGainTarget * synthStage;
+        this.padGain = this.autoPadGainTarget * synthStage * PAD_GAIN_TRIM;
         this.padGate = synthStage > 0.05 ? 1 : 0;
         this.padFreq = this.autoPadFreq;
         this.padBright = this.autoPadBright;
@@ -1972,12 +2427,12 @@ export class DroneWorkletEngine {
       }
 
       if (midiLeadOn) {
-        this.leadGain = 0.16 * synthStage;
+        this.leadGain = 0.16 * synthStage * LEAD_GAIN_TRIM;
         this.leadFreq = this.leadBaseHz;
         this.leadBright = 0.4 + synthStage * 0.3;
         this.leadProb = synthStage > 0.1 ? 1 : 0;
       } else if (autoLeadActive) {
-        this.leadGain = this.autoLeadGainTarget * synthStage;
+        this.leadGain = this.autoLeadGainTarget * synthStage * LEAD_GAIN_TRIM;
         this.leadFreq = this.autoLeadFreq;
         this.leadBright = this.autoLeadBright;
         this.leadProb = synthStage > 0.1 ? 1 : 0;
@@ -2007,7 +2462,9 @@ export class DroneWorkletEngine {
       this.raveBpm = expRange01(control.leftX, 126, 152);
       if (this.drumLP) {
         const tA = this.ctx?.currentTime ?? 0;
-        const target = expRange01(control.rightY, 1400, 14000);
+        const rawCut = expRange01(control.rightY, 1400, 14000);
+        const minCut = this.raveTotalBars < 8 ? 9000 : 0;
+        const target = Math.max(rawCut, minCut || rawCut);
         if (Math.abs(target - this.lastDrumLpFreq) > 8) {
           this.lastDrumLpFreq = target;
           try {
@@ -2051,7 +2508,8 @@ export class DroneWorkletEngine {
       this.fxHold = Math.max(0, Math.min(1, this.fxHold + (rPinch - this.fxHold) * 0.15));
 
       const fx = this.fxHold;
-      const cut = expRange01(1 - control.rightY, 180, 14000);
+      const rawCut = expRange01(1 - control.rightY, 180, 14000);
+      const cut = Math.max(FX_FILTER_MIN_CUTOFF, rawCut);
       const q = 0.6 + 6.0 * fx * clamp(control.build, 0, 1) + baseQ;
       if (this.fxFilter) {
         this.fxFilter.type = fx > 0.6 ? "bandpass" : "lowpass";
@@ -2184,7 +2642,7 @@ export class DroneWorkletEngine {
 
     // No-hands idle fade (smooth): when no hands in frame, play quietly + show prompt in UI.
     const handsCount = control.hands?.count ?? 0;
-    const idleTarget = handsCount > 0 ? 0 : 1;
+    const idleTarget = 0;
     this.idleAmt = this.idleAmt + (idleTarget - this.idleAmt) * 0.10;
     const gate =
       this.mode === "performance"
@@ -2390,10 +2848,10 @@ export class DroneWorkletEngine {
       guitarBright,
       guitarGate
     };
-
+    this.stepHitCount = 0;
     this.node.port.postMessage(params);
 
-    this.node.port.postMessage({ type: "gate", gate });
+    this.node?.port.postMessage({ type: "gate", gate });
   }
 
   update(control: ControlState) {
@@ -2592,12 +3050,18 @@ export class DroneWorkletEngine {
     return this.pulse;
   }
 
-  setMode(_mode: "performance" | "drone") {
+  async setMode(_mode: "performance" | "drone") {
+    const prevMode = this.mode;
     this.mode = _mode;
     this.applyModeGainStaging();
     if (this.mode === "performance") {
-      void this.ensureSamplesLoaded();
+      await this.ensureSamplesLoaded(prevMode !== "performance");
+      this.stopDroneStems();
       this.ensureRaveScheduler();
+    } else {
+      this.stopRaveScheduler();
+      await this.ensureDroneStemsLoaded(prevMode !== "drone");
+      this.ensureDroneStemsPlaying();
     }
   }
 
