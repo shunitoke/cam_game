@@ -170,6 +170,19 @@ export class DroneWorkletEngine {
   private leadProb = 0;
   private leadBaseHz = 440;
 
+  private garageMelBus: GainNode | null = null;
+  private garageMelFilter: BiquadFilterNode | null = null;
+  private garageMelDrive: WaveShaperNode | null = null;
+  private garageMelOscs: Array<{ osc: OscillatorNode; gain: GainNode; ratio: number }> = [];
+  private garageMelNotesHz: number[] = [midiToHz(61), midiToHz(64), midiToHz(67), midiToHz(69)];
+  private readonly garageMelodyPattern = [
+    1.0, 0, 0.65, 0,
+    0.5, 0, 0.85, 0,
+    0.55, 0, 0.4, 0,
+    0.6, 0, 0.35, 0
+  ];
+  private readonly garageMelodyNotes = [2, 0, 1, 0, 3, 1, 2, 0, 1, 3, 2, 1, 3, 0, 2, 1];
+
   private padEnv = 0;
   private leadEnv = 0;
   private padDrive: WaveShaperNode | null = null;
@@ -301,6 +314,16 @@ export class DroneWorkletEngine {
     this.leadBaseHz = midiToHz(chord.lead);
     this.bassRootHz = midiToHz(chord.padLow - 12);
     this.bassAltHz = midiToHz(chord.padHigh - 12);
+    const root = chord.padLow;
+    const third = root + 3;
+    const fifth = root + 7;
+    const top = chord.lead;
+    this.garageMelNotesHz = [
+      midiToHz(root),
+      midiToHz(third),
+      midiToHz(fifth),
+      midiToHz(top)
+    ];
   }
 
   private updateHarmonyTimeline(bar: number) {
@@ -879,6 +902,118 @@ export class DroneWorkletEngine {
     this.bassBus = null;
   }
 
+  private ensureGarageMelSynth() {
+    if (!this.ctx || !this.master) return;
+
+    if (!this.garageMelBus) {
+      this.garageMelBus = this.ctx.createGain();
+      this.garageMelBus.gain.value = 0;
+      this.garageMelFilter = this.ctx.createBiquadFilter();
+      this.garageMelFilter.type = "bandpass";
+      this.garageMelFilter.frequency.value = 1400;
+      this.garageMelFilter.Q.value = 2.8;
+      this.garageMelDrive = this.ctx.createWaveShaper();
+      this.garageMelDrive.curve = makeDriveCurve(0.28);
+      this.garageMelDrive.oversample = "2x";
+      this.garageMelBus.connect(this.garageMelFilter);
+      this.garageMelFilter.connect(this.garageMelDrive);
+      this.garageMelDrive.connect(this.master);
+    }
+
+    if (this.garageMelOscs.length === 0 && this.garageMelBus) {
+      const voices: Array<{ type: OscillatorType; ratio: number; level: number }> = [
+        { type: "sawtooth", ratio: 1, level: 0.35 },
+        { type: "square", ratio: 0.5, level: 0.18 }
+      ];
+      for (const voice of voices) {
+        const osc = this.ctx.createOscillator();
+        osc.type = voice.type;
+        osc.frequency.value = this.garageMelNotesHz[0] ?? this.leadBaseHz;
+        const gain = this.ctx.createGain();
+        gain.gain.value = voice.level;
+        osc.connect(gain);
+        gain.connect(this.garageMelBus);
+        osc.start();
+        this.garageMelOscs.push({ osc, gain, ratio: voice.ratio });
+      }
+    }
+  }
+
+  private disposeGarageMelSynth() {
+    for (const voice of this.garageMelOscs) {
+      try {
+        voice.osc.stop();
+      } catch {
+      }
+      try {
+        voice.osc.disconnect();
+      } catch {
+      }
+      try {
+        voice.gain.disconnect();
+      } catch {
+      }
+    }
+    this.garageMelOscs = [];
+    try {
+      this.garageMelDrive?.disconnect();
+    } catch {
+    }
+    try {
+      this.garageMelFilter?.disconnect();
+    } catch {
+    }
+    try {
+      this.garageMelBus?.disconnect();
+    } catch {
+    }
+    this.garageMelDrive = null;
+    this.garageMelFilter = null;
+    this.garageMelBus = null;
+  }
+
+  private triggerGarageMelody(time: number, weight: number, step: number, dens: number, section: number) {
+    if (!this.ctx) return;
+    this.ensureGarageMelSynth();
+    if (!this.garageMelBus || !this.garageMelOscs.length) return;
+
+    const noteIndex = this.garageMelodyNotes[step % this.garageMelodyNotes.length] ?? 0;
+    const hz = this.garageMelNotesHz[noteIndex % this.garageMelNotesHz.length] ?? this.leadBaseHz;
+    for (const voice of this.garageMelOscs) {
+      const target = hz * voice.ratio;
+      try {
+        voice.osc.frequency.setTargetAtTime(target, time, 0.01);
+      } catch {
+        voice.osc.frequency.value = target;
+      }
+    }
+
+    if (this.garageMelFilter) {
+      const cut = Math.min(5200, hz * (2.2 + dens * 1.6 + section * 0.18));
+      try {
+        this.garageMelFilter.frequency.setTargetAtTime(cut, time, 0.02);
+      } catch {
+        this.garageMelFilter.frequency.value = cut;
+      }
+      this.garageMelFilter.Q.value = 2.2 + dens * 1.4;
+    }
+
+    const accent = clamp(weight * (0.4 + 0.6 * dens) * (section >= 2 ? 1.15 : 0.9), 0, 0.75);
+    const attack = 0.008;
+    const decay = 0.22 + dens * 0.12;
+
+    try {
+      this.garageMelBus.gain.cancelScheduledValues(time);
+      this.garageMelBus.gain.setValueAtTime(Math.max(1e-4, this.garageMelBus.gain.value), time);
+      this.garageMelBus.gain.linearRampToValueAtTime(accent, time + attack);
+      this.garageMelBus.gain.exponentialRampToValueAtTime(0.001, time + decay);
+    } catch {
+      this.garageMelBus.gain.value = accent;
+    }
+
+    this.markSample("lead", accent);
+  }
+
   private triggerBassNote(time: number, weight: number, step: number, section: number, dens: number) {
     if (!this.ctx) return;
     this.ensureBassSynth();
@@ -1251,6 +1386,12 @@ export class DroneWorkletEngine {
       const v = 0.12 * percMix;
       this.markSample("rim", v);
       this.fireSample(time, this.sampleRim, v, 1.0);
+    }
+
+    const garageWeight = this.garageMelodyPattern[step] ?? 0;
+    if (garageWeight > 0 && !inBreak && section >= 1) {
+      const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+      this.triggerGarageMelody(time, garageWeight, step, dens, section);
     }
 
     const bassWeight = this.bassPattern[step] ?? 0;
