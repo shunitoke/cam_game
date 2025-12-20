@@ -46,6 +46,8 @@ export class HandOverlay2D {
   private targetFps = 15;
   private minIntervalMs = 1000 / 15;
   private lastDrawAt = -Infinity;
+  private landmarkCache = new Map<string, Vec2[]>();
+  private smoothing = 0.35;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -75,6 +77,11 @@ export class HandOverlay2D {
     this.minIntervalMs = 1000 / this.targetFps;
   }
 
+  setSmoothing(amount: number) {
+    this.smoothing = clamp01(amount);
+    this.landmarkCache.clear();
+  }
+
   resize() {
     this.dpr = Math.min(this.maxDpr, window.devicePixelRatio || 1);
     const w = Math.floor(window.innerWidth * this.dpr);
@@ -101,11 +108,16 @@ export class HandOverlay2D {
 
     this.clear();
 
-    for (const hand of hands) {
-      const alpha = clamp01(0.35 + hand.score * 0.65);
-      const hue = hand.label === "Left" ? 195 : hand.label === "Right" ? 275 : 220;
+    const relabeled = this.normalizeLabels(hands);
 
-      if (!hand.landmarks || hand.landmarks.length < 21) {
+    for (const { hand, label } of relabeled) {
+      const alpha = clamp01(0.35 + hand.score * 0.65);
+      const hue = label === "Left" ? 195 : label === "Right" ? 275 : 220;
+
+      const smoothed = this.smoothLandmarks(hand, label);
+      const landmarks = smoothed ?? hand.landmarks;
+
+      if (!landmarks || landmarks.length < 21) {
         this.drawSimple(hand, hue, alpha);
         continue;
       }
@@ -126,8 +138,8 @@ export class HandOverlay2D {
       // Batch connections into a single stroke.
       this.ctx.beginPath();
       for (const [a, b] of CONNECTIONS) {
-        const pa = hand.landmarks[a];
-        const pb = hand.landmarks[b];
+        const pa = landmarks[a];
+        const pb = landmarks[b];
         if (!pa || !pb) continue;
         const ppa = this.toPx(pa);
         const ppb = this.toPx(pb);
@@ -143,7 +155,7 @@ export class HandOverlay2D {
       this.ctx.fillStyle = `hsla(${hue}, 95%, 70%, ${alpha})`;
       this.ctx.beginPath();
       for (let i = 0; i < 21; i++) {
-        const p = hand.landmarks[i];
+        const p = landmarks[i];
         if (!p) continue;
 
         let r = baseR;
@@ -196,6 +208,49 @@ export class HandOverlay2D {
     this.ctx.fill();
 
     this.ctx.restore();
+  }
+
+  private normalizeLabels(hands: HandPose[]): Array<{ hand: HandPose; label: "Left" | "Right" | "Unknown" }> {
+    if (!hands.length) return [];
+    const indexed = hands.map((hand, idx) => ({ hand, idx, label: (hand.label as "Left" | "Right" | "Unknown") ?? "Unknown" }));
+    const sorted = [...indexed].sort((a, b) => (a.hand.center.x ?? 0.5) - (b.hand.center.x ?? 0.5));
+
+    if (sorted.length === 1) {
+      sorted[0].label = sorted[0].hand.center.x < 0.5 ? "Left" : "Right";
+    } else if (sorted.length >= 2) {
+      sorted[0].label = "Left";
+      sorted[sorted.length - 1].label = "Right";
+    }
+
+    const restored = sorted
+      .sort((a, b) => a.idx - b.idx)
+      .map((item) => ({ hand: item.hand, label: item.label ?? "Unknown" }));
+    return restored;
+  }
+
+  private smoothLandmarks(hand: HandPose, visualLabel: "Left" | "Right" | "Unknown"): Vec2[] | null {
+    if (!hand?.landmarks || hand.landmarks.length < 21) return null;
+    const key = visualLabel ?? hand.label ?? "unknown";
+    const prev = this.landmarkCache.get(key);
+    const alpha = this.lowPower ? Math.min(0.6, this.smoothing + 0.1) : this.smoothing;
+    const result: Vec2[] = new Array(hand.landmarks.length);
+
+    for (let i = 0; i < hand.landmarks.length; i++) {
+      const curr = hand.landmarks[i];
+      if (!curr) continue;
+      if (!prev || prev.length !== hand.landmarks.length || !prev[i]) {
+        result[i] = { x: curr.x, y: curr.y };
+        continue;
+      }
+      const p = prev[i]!;
+      result[i] = {
+        x: p.x + (curr.x - p.x) * alpha,
+        y: p.y + (curr.y - p.y) * alpha
+      };
+    }
+
+    this.landmarkCache.set(key, result);
+    return result;
   }
 
   private toPx(p: Vec2) {

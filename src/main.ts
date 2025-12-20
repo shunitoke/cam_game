@@ -149,6 +149,8 @@ async function main() {
 
   const mergeHandsWithMouse = (frame: HandsFrame): HandsFrame => {
     if (!mouseHandState.active) return frame;
+    const hasRealRight = frame.hands.some((h) => h.label === "Right");
+    if (hasRealRight) return frame;
     const mouseHand: HandPose = {
       label: "Right",
       score: 1,
@@ -159,7 +161,7 @@ async function main() {
       fist: mouseHandState.pinching,
       speed: mouseHandState.speed
     };
-    const hands = frame.hands.filter((h) => h.label !== "Right");
+    const hands = frame.hands.slice();
     hands.push(mouseHand);
     return {
       count: hands.length,
@@ -1109,7 +1111,7 @@ async function main() {
 
       if (camTrackOn) {
         const nowOv = performance.now();
-        const minOverlayIntervalMs = 50;
+        const minOverlayIntervalMs = 33;
         if (!lastOverlayDrawAt || nowOv - lastOverlayDrawAt >= minOverlayIntervalMs) {
           lastOverlayDrawAt = nowOv;
           overlay.draw(hands.hands);

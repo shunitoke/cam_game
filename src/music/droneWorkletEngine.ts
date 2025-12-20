@@ -2936,8 +2936,6 @@ export class DroneWorkletEngine {
             const cleanGainIdle = Math.min(0.15, 0.1 + 0.05 * (1 - this.idleAmt));
             const cleanGainBase = strumActive ? 0 : cleanActive ? cleanGainHand : cleanGainIdle;
 
-            console.log(`Hand detection: cleanActive=${cleanActive}, pinch=${p.toFixed(2)}, strumThreshold=${strumThreshold}, strumActive=${strumActive}`);
-
             // Cancel timeout when pinching starts
             if (strumActive && this.rawGtrStartTimeout !== null) {
               clearTimeout(this.rawGtrStartTimeout);
@@ -2947,20 +2945,14 @@ export class DroneWorkletEngine {
             // Control raw guitar audio element
             if (cleanSampleAvailable) {
               const rawGtrGainValue = cleanGainBase;
-              console.log(
-                `Guitar(raw): cleanActive=${cleanActive}, strumActive=${strumActive}, gain=${rawGtrGainValue.toFixed(2)}, paused=${this.rawGtrEl?.paused}`
-              );
-
               if (strumActive) {
                 try {
                   this.rawGtrGain?.disconnect();
-                  console.log("PINCH: SAMPLE DISCONNECTED");
                 } catch {}
               } else if (this.ctx?.destination) {
                 try {
                   this.rawGtrGain?.disconnect();
                   this.rawGtrGain?.connect(this.ctx.destination);
-                  console.log("ROUTED TO CLEAN (DESTINATION)");
                 } catch {}
               }
 
