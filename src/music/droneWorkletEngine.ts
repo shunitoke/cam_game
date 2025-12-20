@@ -247,24 +247,27 @@ export class DroneWorkletEngine {
   private sceneFxBoost = 0;
   private scenePadBrightBoost = 0;
   private readonly harmonyProgression: HarmonyClip[] = [
-    // Locrian pack – Progression 2 (moody tension)
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_I°" }, // I°
-    { bars: 4, padLow: 59, padHigh: 65, lead: 71, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_vii°" }, // vii°
-    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_iii" }, // iii
-    { bars: 4, padLow: 57, padHigh: 64, lead: 69, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_vi" }, // vi
-    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_ii" }, // ii
-    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_ii_repeat" }, // ii
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_I°_return" }, // I°
-    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_I_vii°_iii_vi_ii_ii_I_iii_P2_iii_return" }, // iii
-    // Locrian pack – Progression 13 (darker lift)
-    { bars: 4, padLow: 54, padHigh: 61, lead: 66, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_IV" }, // IV
-    { bars: 4, padLow: 57, padHigh: 64, lead: 69, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_VI" }, // vi
-    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_II" }, // ii
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_I°" }, // I°
-    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_I°_hold" }, // I° hold
-    { bars: 4, padLow: 55, padHigh: 62, lead: 67, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_V" }, // V
-    { bars: 4, padLow: 52, padHigh: 59, lead: 64, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_III" }, // iii
-    { bars: 4, padLow: 59, padHigh: 65, lead: 71, source: "C#_Locrian_IV_vi_ii_I_I_V_iii_vii°_P13_vii°" } // vii°
+    // Intro – Locrian tension with quick passing colors
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "LOC_P2_I°" },
+    { bars: 2, padLow: 52, padHigh: 59, lead: 64, source: "LOC_P2_iii_pass" },
+    { bars: 2, padLow: 50, padHigh: 57, lead: 62, source: "LOC_P2_ii_shade" },
+    { bars: 4, padLow: 47, padHigh: 54, lead: 59, source: "Borrow_bVII_Bmaj" },
+    // Drive lift – borrowing IV/VI colors for movement
+    { bars: 4, padLow: 54, padHigh: 61, lead: 66, source: "LOC_P13_IV" },
+    { bars: 2, padLow: 57, padHigh: 64, lead: 69, source: "LOC_P13_VI" },
+    { bars: 2, padLow: 52, padHigh: 60, lead: 67, source: "AEOLIAN_iii_sus2" },
+    { bars: 4, padLow: 55, padHigh: 62, lead: 67, source: "LOC_P13_V_add9" },
+    // Peak – chromatic punches and modal mixture
+    { bars: 4, padLow: 49, padHigh: 58, lead: 63, source: "MIXOL_bVI_riser" },
+    { bars: 2, padLow: 56, padHigh: 63, lead: 68, source: "CHROMA_augPivot" },
+    { bars: 2, padLow: 52, padHigh: 59, lead: 64, source: "Return_iii" },
+    { bars: 4, padLow: 50, padHigh: 57, lead: 62, source: "Return_ii" },
+    // Finale – upper register sparkle and resolution
+    { bars: 4, padLow: 49, padHigh: 55, lead: 61, source: "LOC_I°_resolve" },
+    { bars: 4, padLow: 61, padHigh: 68, lead: 73, source: "UPPER_ix_lift" },
+    { bars: 2, padLow: 54, padHigh: 62, lead: 67, source: "DROP_IV_minor" },
+    { bars: 2, padLow: 50, padHigh: 57, lead: 62, source: "DROP_ii_minor" },
+    { bars: 4, padLow: 47, padHigh: 54, lead: 59, source: "OUTRO_bVII_hold" }
   ];
   private harmonyIndex = 0;
   private harmonyBarStart = 0;
@@ -1055,6 +1058,8 @@ export class DroneWorkletEngine {
 
   private maybeTriggerAutoSynths(section: number, dens: number) {
     if (this.mode !== "performance") return;
+    const synthStage = this.stageMix(2, 4);
+    if (synthStage < 0.1) return;
     const nowMs = typeof performance !== "undefined" ? performance.now() : Date.now();
     if (!this.midiPadNote && this.raveTotalBars >= 4) {
       const gap = section >= 2 ? 4 : 8;
@@ -1066,7 +1071,7 @@ export class DroneWorkletEngine {
 
   private triggerAutoPad(nowMs: number, section: number, dens: number) {
     const sustain = 4200 + section * 1200 + dens * 800;
-    const gain = clamp(0.28 + section * 0.16 + dens * 0.25, 0, 0.9);
+    const gain = clamp(0.18 + section * 0.12 + dens * 0.18, 0, 0.6);
     const bright = clamp(0.45 + section * 0.18 + dens * 0.1, 0, 1);
     const useHigh = section >= 2 && this.rand01() > 0.4;
     this.autoPadHoldUntilMs = nowMs + sustain;
@@ -1172,7 +1177,10 @@ export class DroneWorkletEngine {
         if (this.raveStep === 0) {
           this.maybeAdvanceArrangement(this.raveBar);
           this.maybeAdvanceGroove(this.raveBar);
-          const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+          let dens = Math.min(1, Math.max(0, this.lastRightPinch));
+    if (dens < 0.05) {
+      dens = clamp(this.stageMix(1, 4) * 0.7, 0, 0.85);
+    }
           const fillOn = this.raveFillUntilBar > this.raveBar;
           this.maybeAdvanceBarVariant(this.raveBar, this.raveSection, dens, fillOn);
           this.updateBreakdownState(this.raveBar);
@@ -1268,13 +1276,18 @@ export class DroneWorkletEngine {
   private scheduleRaveStep(time: number, step: number) {
     // Heavy minimal techno: kick foundation, tight off-hats, sparse rim/snare.
     // Arrangement/enrichment is bar-driven (no RNG) and also reacts to density (right pinch).
-    const dens = Math.min(1, Math.max(0, this.lastRightPinch));
+    let dens = Math.min(1, Math.max(0, this.lastRightPinch));
+    if (dens < 0.05) {
+      dens = clamp(this.stageMix(1, 4) * 0.8, 0, 0.85);
+    }
     const hatBoost = this.sceneHatBoost * (1 + this.macroPercBoostLevel * 0.8);
     const percBoost = this.scenePercBoost * (1 + this.macroPercBoostLevel * 0.9);
     const introSlope = clamp(this.raveTotalBars / Math.max(1, this.stageKickBar), 0, 1);
     const kickMix = Math.min(1, this.stageMix(1, 4) + introSlope * 0.5);
     const hatMix = Math.min(1, kickMix * hatBoost);
-    const percMix = clamp((kickMix - 0.25) / 0.75, 0, 1) * percBoost;
+    const percStage = this.stageMix(1, 4);
+    const percMixBase = (percStage * 0.35) + clamp((kickMix - 0.25) / 0.75, 0, 1);
+    const percMix = Math.min(1, percMixBase) * percBoost;
     let kickAccent = 1;
     const triggerKick = (when: number, gain: number) => {
       if (kickMix <= 0.02) return;
@@ -1936,19 +1949,20 @@ export class DroneWorkletEngine {
       const midiLeadOn = this.midiLeadNote != null;
       const autoPadActive = !midiPadOn && nowMs < this.autoPadHoldUntilMs;
       const autoLeadActive = !midiLeadOn && nowMs < this.autoLeadHoldUntilMs;
+      const synthStage = this.stageMix(2, 4);
 
       if (midiPadOn) {
         // map note 42/44 to pad
         const n = this.midiPadNote!;
-        this.padGain = 0.34;
-        this.padGate = 1;
+        this.padGain = 0.24 * synthStage;
+        this.padGate = synthStage > 0.05 ? 1 : 0;
         const padHz = n === 44 ? this.padChordHighHz : this.padChordLowHz;
         this.padFreq = padHz;
-        this.padBright = 0.52;
+        this.padBright = 0.52 + synthStage * 0.18;
         this.padDetune = 0.01;
       } else if (autoPadActive) {
-        this.padGain = this.autoPadGainTarget;
-        this.padGate = 1;
+        this.padGain = this.autoPadGainTarget * synthStage;
+        this.padGate = synthStage > 0.05 ? 1 : 0;
         this.padFreq = this.autoPadFreq;
         this.padBright = this.autoPadBright;
         this.padDetune = 0.01;
@@ -1958,15 +1972,15 @@ export class DroneWorkletEngine {
       }
 
       if (midiLeadOn) {
-        this.leadGain = 0.24;
+        this.leadGain = 0.16 * synthStage;
         this.leadFreq = this.leadBaseHz;
-        this.leadBright = 0.58;
-        this.leadProb = 1;
+        this.leadBright = 0.4 + synthStage * 0.3;
+        this.leadProb = synthStage > 0.1 ? 1 : 0;
       } else if (autoLeadActive) {
-        this.leadGain = this.autoLeadGainTarget;
+        this.leadGain = this.autoLeadGainTarget * synthStage;
         this.leadFreq = this.autoLeadFreq;
         this.leadBright = this.autoLeadBright;
-        this.leadProb = 1;
+        this.leadProb = synthStage > 0.1 ? 1 : 0;
       } else {
         this.leadGain = 0;
         this.leadProb = 0;
