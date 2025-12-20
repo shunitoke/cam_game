@@ -174,16 +174,18 @@ async function main() {
     if (mode === "drone") {
       gestureHint.textContent =
         "Gestures (DRONE)\n" +
-        "- Keys: pitch\n" +
-        "- Left (BASS): pinch = level, X = pitch, Y = tone\n" +
-        "- Right (GUITAR): pinch = level, X = pitch, Y = brightness\n";
+        "- Keys: pitch (hold)\n" +
+        "- Left (BASS): Y = pitch/level, pinch = grit, X = modulation\n" +
+        "- Right (GUITAR): hand = clean strum, pinch = drive, X = pitch, Y = brightness\n";
     } else {
       gestureHint.textContent =
         "Gestures (RAVE)\n" +
-        "- Left X: tempo\n" +
-        "- Right Y: drum tone\n" +
-        "- Right pinch: FX drive\n" +
-        "- Left pinch: pad gate";
+        "- Right: filter / FX / density\n" +
+        "- Left pinch: kick bias\n" +
+        "- Left Y: macro drive\n" +
+        "- Build (hands apart): scene lift\n" +
+        "- MIDI 36/38/39/40: kick/hat/clap/rim\n" +
+        "- MIDI 41/42/43/44: bass/pad/lead/pad2";
     }
   };
 
@@ -1233,38 +1235,37 @@ async function main() {
         }
         rms = Math.sqrt(sum / Math.max(1, n / 2));
       }
-      const baseIntensity = 0.1 + pinch * 0.2;
-      const intensity = Math.min(1, Math.max(baseIntensity, rms * 14 * (1 + pinch * 0.6)));
-      const jiggle = intensity > 0.02;
-      const shake = intensity * 18 * (1 + pinch * 0.8);
-      const rot = intensity * 3.4 * (1 + pinch * 0.6);
-      const spread = 1 + intensity * 0.04 + pinch * 0.05;
-      const dx = jiggle ? (Math.random() - 0.5) * shake : 0;
-      const dy = jiggle ? (Math.random() - 0.5) * shake : 0;
-      ui.style.transform = jiggle ? `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${spread})` : "";
-      hud.style.transform = jiggle
-        ? `translate(${dx * 0.7}px, ${dy * 0.7}px) rotate(${rot * 0.6}deg) scale(${1 + intensity * 0.02})`
-        : "";
-      // Keyboard tilts opposite direction for contrast and stretches outward.
-      const kDx = jiggle ? -dx * (1.1 + pinch * 0.2) : 0;
-      const kDy = jiggle ? dy * (0.9 + pinch * 0.2) : 0;
-      midiOverlay.style.transform = jiggle
-        ? `translate(${kDx}px, ${kDy}px) rotate(${-rot * 1.2}deg) scale(${1 + intensity * 0.05 + pinch * 0.05})`
-        : "";
-      midiOverlay.style.filter = jiggle ? `contrast(${1 + intensity * 1.5}) saturate(${1 + intensity})` : "";
+      const threshold = 0.06;
+      const energy = Math.max(0, rms - threshold);
+      const intensity = Math.min(1, energy * (10 + pinch * 2.5));
+      if (intensity < 0.12) {
+        resetDroneGlitch();
+      } else {
+        const shake = intensity * (12 + pinch * 6);
+        const rot = intensity * (2.4 + pinch * 1.2);
+        const spread = 1 + intensity * 0.035 + pinch * 0.03;
+        const dx = (Math.random() - 0.5) * shake;
+        const dy = (Math.random() - 0.5) * shake;
+        ui.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${spread})`;
+        hud.style.transform = `translate(${dx * 0.55}px, ${dy * 0.55}px) rotate(${rot * 0.45}deg) scale(${1 + intensity * 0.015})`;
+        const kDx = -dx * (0.9 + pinch * 0.1);
+        const kDy = dy * (0.8 + pinch * 0.1);
+        midiOverlay.style.transform = `translate(${kDx}px, ${kDy}px) rotate(${-rot * 0.9}deg) scale(${1 + intensity * 0.03 + pinch * 0.03})`;
+        midiOverlay.style.filter = `contrast(${1 + intensity * 0.9}) saturate(${1 + intensity * 0.6})`;
 
-      const flashChance = Math.min(0.95, intensity * 0.9 + 0.05);
-      const glow = `0 0 ${10 + intensity * 25}px rgba(255,150,60,${0.4 + 0.5 * intensity})`;
-      for (const key of midiKeyEls.values()) {
-        const active = Math.random() < flashChance;
-        const flicker = active ? 1 + intensity + pinch * 0.5 : 0.4 + intensity * 0.6;
-        const hueShift = active ? 40 + intensity * 60 + pinch * 80 : 32;
-        key.style.boxShadow = active ? glow : "0 0 6px rgba(200,120,40,0.35)";
-        key.style.filter = `brightness(${flicker}) contrast(${1.0 + intensity * 0.4}) hue-rotate(${hueShift}deg)`;
-        key.style.opacity = String(0.35 + intensity * 0.6);
-        key.style.transform = active
-          ? `rotate(${(Math.random() - 0.5) * rot * 2}deg) scale(${1 + pinch * 0.3})`
-          : `scale(${1 + pinch * 0.1})`;
+        const flashChance = Math.min(0.8, intensity * 0.6 + 0.1);
+        const glow = `0 0 ${8 + intensity * 16}px rgba(255,150,60,${0.3 + 0.4 * intensity})`;
+        for (const key of midiKeyEls.values()) {
+          const active = Math.random() < flashChance;
+          const flicker = active ? 1 + intensity * 0.8 + pinch * 0.3 : 0.5 + intensity * 0.4;
+          const hueShift = active ? 25 + intensity * 40 + pinch * 40 : 28;
+          key.style.boxShadow = active ? glow : "0 0 4px rgba(200,120,40,0.25)";
+          key.style.filter = `brightness(${flicker}) contrast(${1.0 + intensity * 0.25}) hue-rotate(${hueShift}deg)`;
+          key.style.opacity = String(0.4 + intensity * 0.4);
+          key.style.transform = active
+            ? `rotate(${(Math.random() - 0.5) * rot}deg) scale(${1 + pinch * 0.18})`
+            : `scale(${1 + pinch * 0.03})`;
+        }
       }
     } else {
       resetDroneGlitch();

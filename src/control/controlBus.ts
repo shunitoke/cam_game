@@ -21,6 +21,7 @@ export class ControlBus {
 
   private leftWristPrevX: number | null = null;
   private leftWristVelX = 0;
+  private rightHandPresent = false;
 
   constructor() {
     this.state = this.createDefaultState();
@@ -101,11 +102,14 @@ export class ControlBus {
 
     const sceneDelta = this.detectSceneSwipe({ t, dt, left });
 
+    this.rightHandPresent = !!right;
+
     this.state = {
       t,
       dt,
 
       hands,
+      rightHandPresent: this.rightHandPresent,
 
       rightX: expSlew(this.state.rightX, nextRightX, dt, 0.06),
       rightY: expSlew(this.state.rightY, nextRightY, dt, 0.06),

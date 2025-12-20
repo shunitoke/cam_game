@@ -131,13 +131,27 @@ export class DroneWorkletEngine {
   private droneBassDrive: WaveShaperNode | null = null;
 
   // DRONE guitar (single layer)
-  private droneGtrASrc: AudioBufferSourceNode | null = null;
   private droneGtrAGain: GainNode | null = null;
   private droneGtrAHP: BiquadFilterNode | null = null;
   private droneGtrAPre: WaveShaperNode | null = null;
   private droneGtrALP: BiquadFilterNode | null = null;
   private droneGtrADrive: WaveShaperNode | null = null;
   private droneGtrAComp: DynamicsCompressorNode | null = null;
+  private droneGtrAClip: WaveShaperNode | null = null;
+  private droneGtrLoopGain: GainNode | null = null;
+  private droneGtrCleanHP: BiquadFilterNode | null = null;
+  private droneGtrCleanLP: BiquadFilterNode | null = null;
+  private droneGtrLoopSrc: AudioBufferSourceNode | null = null;
+  private droneGtrLoopLastActiveMs = 0;
+  private droneGtrLoopLastLogMs = 0;
+  private droneGtrCleanConnected = false;
+  private droneGtrStrumSrc: AudioBufferSourceNode | null = null;
+  private droneGtrPresence = 0;
+  private droneGtrRightHandSeenAtMs = 0;
+  private rawGtrEl: HTMLAudioElement | null = null;
+  private rawGtrDistortedSrc: AudioBufferSourceNode | null = null;
+  private rawGtrGain: GainNode | null = null;
+  private rawGtrStartTimeout: number | null = null;
 
   private lastError: string | null = null;
 
@@ -966,11 +980,18 @@ export class DroneWorkletEngine {
   private lastBassDriveAmt = -1;
   private lastBassCut = -1;
   private lastBassQ = -1;
+  private lastGtrPreDrive = -1;
+  private lastGtrPostDrive = -1;
+  private lastGtrHpCut = -1;
+  private lastGtrLpCut = -1;
 
   private droneGtrAuto = 0;
   private droneGtrAutoTarget = 0;
   private droneGtrNextSwellT = 0;
   private droneGtrSwellUntilT = 0;
+  private droneGtrHandActive = false;
+  private droneGtrStrumEnv = 0;
+  private droneGtrPrevPinch = 0;
   private resumeContextPromise: Promise<void> | null = null;
 
   private async loadSample(ctx: AudioContext, url: string) {
@@ -1117,6 +1138,20 @@ export class DroneWorkletEngine {
     } finally {
       this.loadingDroneStems = null;
     }
+
+    // Initialize raw audio element for direct guitar playback with Web Audio routing
+    if (this.sampleDroneGuitar && !this.rawGtrEl) {
+      this.rawGtrEl = new Audio("/samples/guitar.ogg");
+      this.rawGtrEl.loop = true;
+      this.rawGtrEl.volume = 1.0; // Always full volume, control via Web Audio
+      this.rawGtrElSrc = this.ctx.createMediaElementSource(this.rawGtrEl);
+      this.rawGtrGain = this.ctx.createGain();
+      this.rawGtrGain.gain.value = 0.0;
+      this.rawGtrElSrc.connect(this.rawGtrGain);
+      if (this.output) {
+        this.rawGtrGain.connect(this.output);
+      }
+    }
   }
 
   private stopDroneStems() {
@@ -1133,18 +1168,97 @@ export class DroneWorkletEngine {
     };
 
     stopSrc(this.droneBassSrc);
-    stopSrc(this.droneGtrASrc);
+    stopSrc(this.droneGtrLoopSrc);
+    stopSrc(this.droneGtrStrumSrc);
     this.droneBassSrc = null;
-    this.droneGtrASrc = null;
-
+    this.droneGtrLoopSrc = null;
+    this.droneGtrStrumSrc = null;
     try {
-      this.droneBassEl?.pause();
-    } catch {
+      this.stopDroneBass();
+      this.stopDroneGuitar();
+    } catch (err) {
+      console.error(err);
     }
+  }
 
-    try {
-      this.droneBassElSrc?.disconnect();
-    } catch {
+  private stopDroneBass() {
+    if (this.droneBassSrc) {
+      try {
+        this.droneBassSrc.stop();
+      } catch {}
+      try {
+        this.droneBassSrc.disconnect();
+      } catch {}
+      this.droneBassSrc = null;
+    }
+    if (this.droneBassEl) {
+      try {
+        this.droneBassEl.pause();
+      } catch {}
+    }
+    if (this.droneBassElSrc) {
+      try {
+        this.droneBassElSrc.disconnect();
+      } catch {}
+    }
+    if (this.droneBassGain) {
+      try {
+        this.droneBassGain.disconnect();
+      } catch {}
+      this.droneBassGain = null;
+    }
+  }
+
+  private stopDroneGuitar() {
+    if (this.droneGtrLoopSrc) {
+      try {
+        this.droneGtrLoopSrc.stop();
+      } catch {}
+      try {
+        this.droneGtrLoopSrc.disconnect();
+      } catch {}
+      this.droneGtrLoopSrc = null;
+    }
+    if (this.droneGtrStrumSrc) {
+      try {
+        this.droneGtrStrumSrc.stop();
+      } catch {}
+      try {
+        this.droneGtrStrumSrc.disconnect();
+      } catch {}
+      this.droneGtrStrumSrc = null;
+    }
+    if (this.droneGtrAGain) {
+      try {
+        this.droneGtrAGain.disconnect();
+      } catch {}
+      this.droneGtrAGain = null;
+    }
+    if (this.rawGtrGain && this.ctx?.destination) {
+      try {
+        this.rawGtrGain.disconnect();
+      } catch {}
+      this.rawGtrGain.connect(this.ctx.destination);
+    }
+  }
+  private stopRawGuitarSample() {
+    if (this.rawGtrStartTimeout !== null) {
+      clearTimeout(this.rawGtrStartTimeout);
+      this.rawGtrStartTimeout = null;
+    }
+    if (this.rawGtrEl) {
+      try {
+        this.rawGtrEl.pause();
+      } catch {}
+      try {
+        this.rawGtrEl.currentTime = 0;
+      } catch {}
+    }
+    if (this.rawGtrGain) {
+      try {
+        this.rawGtrGain.disconnect();
+      } catch {}
+      this.rawGtrGain.gain.value = 0;
     }
   }
 
@@ -1193,17 +1307,21 @@ export class DroneWorkletEngine {
       this.droneGtrADrive.curve = makeDriveCurve(0.92);
       this.droneGtrADrive.oversample = "4x";
       this.droneGtrAComp = ctx.createDynamicsCompressor();
-      this.droneGtrAComp.threshold.value = -28;
-      this.droneGtrAComp.knee.value = 14;
-      this.droneGtrAComp.ratio.value = 10;
-      this.droneGtrAComp.attack.value = 0.010;
-      this.droneGtrAComp.release.value = 0.34;
+      this.droneGtrAComp.threshold.value = -18; // More sensitive for drone compression
+      this.droneGtrAComp.knee.value = 18; // Softer knee for smoother compression
+      this.droneGtrAComp.ratio.value = 12; // Higher ratio for more squish
+      this.droneGtrAComp.attack.value = 0.008; // Faster attack
+      this.droneGtrAComp.release.value = 0.45; // Slower release for sustain
+      this.droneGtrAClip = ctx.createWaveShaper(); // Additional extreme clipping for Sunn O drone
+      this.droneGtrAClip.curve = makeDriveCurve(16.0); // Maximum obliteration clipping
+      this.droneGtrAClip.oversample = "none";
       this.droneGtrAGain.connect(this.droneGtrAHP);
       this.droneGtrAHP.connect(this.droneGtrAPre);
       this.droneGtrAPre.connect(this.droneGtrALP);
       this.droneGtrALP.connect(this.droneGtrADrive);
       this.droneGtrADrive.connect(this.droneGtrAComp);
-      this.droneGtrAComp.connect(this.master);
+      this.droneGtrAComp.connect(this.droneGtrAClip);
+      this.droneGtrAClip.connect(this.master);
     }
 
     if (this.sampleDroneBass && this.droneBassGain && !this.droneBassSrc) {
@@ -1228,18 +1346,81 @@ export class DroneWorkletEngine {
       }
     }
 
-    if (this.sampleDroneGuitar && this.droneGtrAGain && !this.droneGtrASrc) {
-      const s = ctx.createBufferSource();
-      s.buffer = this.sampleDroneGuitar;
-      s.loop = true;
-      s.playbackRate.value = 1.0;
-      s.connect(this.droneGtrAGain);
-      s.start();
-      this.droneGtrASrc = s;
-      this.lastDroneRateA = 1;
-    }
-
     // (single guitar only)
+  }
+
+  private triggerDroneGuitarStrum(rate: number) {
+    if (!this.ctx || !this.sampleDroneGuitar || !this.droneGtrAGain) return;
+    const ctx = this.ctx;
+    const s = ctx.createBufferSource();
+    s.buffer = this.sampleDroneGuitar;
+    s.loop = false;
+    s.playbackRate.value = rate;
+    s.connect(this.droneGtrAGain);
+    try {
+      s.start();
+    } catch {
+      return;
+    }
+    const stopAt = ctx.currentTime + Math.min(8, this.sampleDroneGuitar.duration + 0.25);
+    try {
+      s.stop(stopAt);
+    } catch {}
+    if (this.droneGtrStrumSrc) {
+      try {
+        this.droneGtrStrumSrc.disconnect();
+      } catch {}
+    }
+    this.droneGtrStrumSrc = s;
+  }
+
+  private ensureGuitarLoopSource() {
+    if (!this.ctx || !this.master || !this.sampleDroneGuitar) return;
+    const ctx = this.ctx;
+    this.ensureGuitarCleanChain();
+    if (!this.droneGtrLoopGain) {
+      this.droneGtrLoopGain = ctx.createGain();
+      this.droneGtrLoopGain.gain.value = 0;
+      if (this.droneGtrCleanHP) {
+        this.droneGtrLoopGain.connect(this.droneGtrCleanHP);
+      }
+    }
+    if (!this.droneGtrLoopSrc) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.sampleDroneGuitar;
+      src.loop = true;
+      src.playbackRate.value = this.lastDroneRateA || 1;
+      src.connect(this.droneGtrLoopGain);
+      try {
+        src.start();
+      } catch {
+        return;
+      }
+      this.droneGtrLoopSrc = src;
+    }
+  }
+
+  private ensureGuitarCleanChain() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    if (!this.droneGtrCleanHP) {
+      this.droneGtrCleanHP = ctx.createBiquadFilter();
+      this.droneGtrCleanHP.type = "highpass";
+      this.droneGtrCleanHP.frequency.value = 110;
+      this.droneGtrCleanHP.Q.value = 0.7;
+    }
+    if (!this.droneGtrCleanLP) {
+      this.droneGtrCleanLP = ctx.createBiquadFilter();
+      this.droneGtrCleanLP.type = "lowpass";
+      this.droneGtrCleanLP.frequency.value = 3600;
+      this.droneGtrCleanLP.Q.value = 0.5;
+    }
+    if (!this.output) return;
+    if (!this.droneGtrCleanConnected && this.droneGtrCleanHP && this.droneGtrCleanLP) {
+      this.droneGtrCleanHP.connect(this.droneGtrCleanLP);
+      this.droneGtrCleanLP.connect(this.output);
+      this.droneGtrCleanConnected = true;
+    }
   }
 
   private ensureBassSynth() {
@@ -2166,6 +2347,9 @@ export class DroneWorkletEngine {
     this.droneGtrSwellUntilT = 0;
     this.droneGtrAuto = 0;
     this.droneGtrAutoTarget = 0;
+    this.droneGtrHandActive = false;
+    this.droneGtrStrumEnv = 0;
+    this.droneGtrPrevPinch = 0;
 
     // Kick off sample loading (hat/kick must exist before scheduler starts).
     await this.ensureSamplesLoaded();
@@ -2642,8 +2826,8 @@ export class DroneWorkletEngine {
 
     // No-hands idle fade (smooth): when no hands in frame, play quietly + show prompt in UI.
     const handsCount = control.hands?.count ?? 0;
-    const idleTarget = 0;
-    this.idleAmt = this.idleAmt + (idleTarget - this.idleAmt) * 0.10;
+    const idleTarget = handsCount > 0 ? 0 : 1;
+    this.idleAmt = this.idleAmt + (idleTarget - this.idleAmt) * 0.08;
     const gate =
       this.mode === "performance"
         ? (kill ? 0 : 1)
@@ -2662,11 +2846,12 @@ export class DroneWorkletEngine {
 
           if (this.droneBassGain) {
             const wave = 0.5 + 0.5 * Math.sin(t * 0.55);
-            const live = 0.24 * (0.80 + 0.20 * wave);
-            const idle = 0.12;
+            const leftPresence = clamp(control.leftY, 0, 1);
+            const live = 0.2 + 0.35 * leftPresence + 0.15 * wave;
+            const idle = 0.06;
             const bassTarget = kill ? 0 : (live * (1 - this.idleAmt) + idle * this.idleAmt);
             try {
-              this.droneBassGain.gain.setTargetAtTime(bassTarget, t, 0.08);
+              this.droneBassGain.gain.setTargetAtTime(bassTarget, t, 0.04);
             } catch {
               this.droneBassGain.gain.value = bassTarget;
             }
@@ -2696,7 +2881,8 @@ export class DroneWorkletEngine {
           // Bass pitch: deep + mostly constant (small slow drift).
           {
             const drift = 0.5 + 0.5 * Math.sin(t * 0.11);
-            const rate = 0.22 + 0.012 * drift;
+            const leftHeight = clamp(control.leftY, 0, 1);
+            const rate = 0.18 + 0.05 * leftHeight + 0.012 * drift;
             if (Math.abs(rate - this.lastDroneRate) > 0.002) {
               this.lastDroneRate = rate;
               if (this.droneBassSrc) {
@@ -2717,8 +2903,9 @@ export class DroneWorkletEngine {
 
           // Bass drive: keep minimal to avoid overload.
           if (this.droneBassDrive) {
-            const amt = 0.10;
-            if (Math.abs(amt - this.lastBassDriveAmt) > 0.02) {
+            const pinch = clamp(control.leftPinch, 0, 1);
+            const amt = 0.06 + 0.35 * pinch;
+            if (Math.abs(amt - this.lastBassDriveAmt) > 0.01) {
               this.lastBassDriveAmt = amt;
               this.droneBassDrive.curve = makeDriveCurve(amt);
             }
@@ -2729,43 +2916,168 @@ export class DroneWorkletEngine {
             const p = clamp(control.rightPinch, 0, 1);
             const bright = clamp(control.rightY, 0, 1);
             const dtGtr = control.dt;
+            const guitarRate = expRange01(control.rightX, 0.12, 0.28);
+            const loopNow = performance.now();
+            const handCount = control.hands?.count ?? 0;
+            const handSignal = handCount > 0 ? 1 : 0;
+            const presenceAttack = 1 - Math.exp(-dtGtr * 8);
+            const presenceRelease = 1 - Math.exp(-dtGtr * 1.3);
+            const targetPresence = handSignal;
+            const blend = handSignal ? presenceAttack : presenceRelease;
+            this.droneGtrPresence += (targetPresence - this.droneGtrPresence) * blend;
+            // Use raw hand count for volume cue, but treat pinch independently
+            const cleanActive = !kill && handCount > 0;
 
-            // Auto-swell (occasional) when not actively playing by hand.
-            // Keeps the drone alive even with hands idle.
-            if (!kill) {
-              const handActive = p > 0.18;
-              if (!handActive) {
-                if (t >= this.droneGtrNextSwellT) {
-                  const len = 3.5 + 6.5 * this.rand01();
-                  this.droneGtrSwellUntilT = t + len;
-                  // Subtle amplitude (scaled down by idleAmt below).
-                  this.droneGtrAutoTarget = 0.10 + 0.16 * this.rand01();
+            const strumThreshold = 0.7;
+            const strumActive = !kill && p >= strumThreshold;
 
-                  const gap = 3.0 + 9.0 * this.rand01();
-                  this.droneGtrNextSwellT = t + len + gap;
-                }
-                if (t >= this.droneGtrSwellUntilT) {
-                  this.droneGtrAutoTarget = 0;
-                }
-              } else {
-                // Manual play cancels the auto swell quickly.
-                this.droneGtrAutoTarget = 0;
-              }
+            console.log(`Hand detection: cleanActive=${cleanActive}, pinch=${p.toFixed(2)}, strumThreshold=${strumThreshold}, strumActive=${strumActive}`);
 
-              const atk = 1.0 - Math.exp(-dtGtr * 0.9);
-              const rel = 1.0 - Math.exp(-dtGtr * 0.55);
-              const kk = this.droneGtrAutoTarget > this.droneGtrAuto ? atk : rel;
-              this.droneGtrAuto += (this.droneGtrAutoTarget - this.droneGtrAuto) * kk;
-            } else {
-              this.droneGtrAutoTarget = 0;
-              this.droneGtrAuto *= Math.pow(0.15, dtGtr);
+            // Cancel timeout when pinching starts
+            if (strumActive && this.rawGtrStartTimeout !== null) {
+              clearTimeout(this.rawGtrStartTimeout);
+              this.rawGtrStartTimeout = null;
             }
 
-            // Continuous control: pinch = level. Silent at 0.
-            const live = 0.65 * Math.pow(p, 1.25);
-            const idle = 0.06;
-            const auto = this.droneGtrAuto * (1 - this.idleAmt);
-            const g = kill ? 0 : (Math.max(live, auto) * (1 - this.idleAmt) + idle * this.idleAmt);
+            // Control raw guitar audio element
+            if (this.rawGtrGain && this.rawGtrEl) {
+              // Sample silent during pinch, loud when hand present, quiet otherwise
+              const rawGtrGainValue = strumActive
+                ? 0
+                : cleanActive
+                  ? Math.min(1.1, 0.85 + 0.25 * (1 - this.idleAmt))
+                  : Math.min(0.15, 0.1 + 0.05 * (1 - this.idleAmt));
+
+              console.log(`Guitar: cleanActive=${cleanActive}, strumActive=${strumActive}, gain=${rawGtrGainValue.toFixed(2)}, paused=${this.rawGtrEl.paused}`);
+
+              // Route through distortion when hand present, directly to destination for clean when no hand
+              if (strumActive) {
+                // Pinching: fully disconnect raw sample
+                try {
+                  this.rawGtrGain.disconnect();
+                  console.log("PINCH: SAMPLE DISCONNECTED");
+                } catch {}
+              } else if (this.ctx?.destination) {
+                // Not pinching: route directly to destination for clean sound (bypasses all distortion)
+                try {
+                  this.rawGtrGain.disconnect();
+                  this.rawGtrGain.connect(this.ctx.destination);
+                  console.log("ROUTED TO CLEAN (DESTINATION)");
+                } catch {}
+              }
+
+              // Set gain level
+              try {
+                this.rawGtrGain.gain.setTargetAtTime(rawGtrGainValue, t, 0.18);
+              } catch {
+                this.rawGtrGain.gain.value = rawGtrGainValue;
+              }
+
+              // Sample starts playing immediately when scene loads (when no pending restart)
+              if (!strumActive && this.rawGtrStartTimeout === null && this.rawGtrEl.paused && rawGtrGainValue > 0) {
+                try {
+                  void this.rawGtrEl.play();
+                } catch {}
+              }
+
+              // Control playback - pause when pinching, restart with 2-second delay when pinch ends
+              const justReleasedPinch = this.droneGtrHandActive && !strumActive;
+
+              if (justReleasedPinch && rawGtrGainValue > 0) {
+                // Start 2-second delay when pinch is released
+                if (!this.rawGtrEl.paused) {
+                  try {
+                    this.rawGtrEl.pause();
+                  } catch {}
+                }
+                if (this.rawGtrStartTimeout !== null) {
+                  clearTimeout(this.rawGtrStartTimeout);
+                }
+                this.rawGtrStartTimeout = window.setTimeout(() => {
+                  if (!this.rawGtrEl) {
+                    this.rawGtrStartTimeout = null;
+                    return;
+                  }
+                  try {
+                    this.rawGtrEl.currentTime = 0; // Restart from beginning
+                    void this.rawGtrEl.play();
+                  } catch {}
+                  this.rawGtrStartTimeout = null;
+                }, 2000);
+              } else if (strumActive && !this.rawGtrEl.paused) {
+                // Pause immediately when pinching starts
+                if (this.rawGtrStartTimeout !== null) {
+                  clearTimeout(this.rawGtrStartTimeout);
+                  this.rawGtrStartTimeout = null;
+                }
+                try {
+                  this.rawGtrEl.pause();
+                } catch {}
+              }
+            }
+
+            // Don't create/stop distorted source - let the distortion chain handle it through routing
+
+            if (cleanActive) {
+              this.droneGtrLoopLastActiveMs = loopNow;
+              this.ensureGuitarLoopSource();
+              if (this.droneGtrLoopGain) {
+                const loopLevel = strumActive
+                  ? 0
+                  : Math.min(0.85, 0.38 + 0.32 * (1 - this.idleAmt));
+                try {
+                  this.droneGtrLoopGain.gain.setTargetAtTime(loopLevel, t, 0.18);
+                } catch {
+                  this.droneGtrLoopGain.gain.value = loopLevel;
+                }
+              }
+              if (this.droneGtrLoopSrc && loopNow - this.droneGtrLoopLastActiveMs > 4500) {
+                try {
+                  this.droneGtrLoopSrc.stop();
+                } catch {}
+                try {
+                  this.droneGtrLoopSrc.disconnect();
+                } catch {}
+                this.droneGtrLoopSrc = null;
+              }
+            } else {
+              if (this.droneGtrLoopGain) {
+                try {
+                  this.droneGtrLoopGain.gain.setTargetAtTime(0, t, 0.25);
+                } catch {
+                  this.droneGtrLoopGain.gain.value = 0;
+                }
+              }
+              if (this.droneGtrLoopSrc && loopNow - this.droneGtrLoopLastActiveMs > 4500) {
+                try {
+                  this.droneGtrLoopSrc.stop();
+                } catch {}
+                try {
+                  this.droneGtrLoopSrc.disconnect();
+                } catch {}
+                this.droneGtrLoopSrc = null;
+              }
+            }
+
+            const strumEdge = strumActive && (!this.droneGtrHandActive || this.droneGtrPrevPinch < strumThreshold);
+            if (!strumActive || this.idleAmt > 0.85) {
+              if (!kill) this.droneGtrStrumEnv *= Math.exp(-dtGtr * 2.2);
+            } else if (strumEdge) {
+              this.droneGtrStrumEnv = 1;
+              this.triggerDroneGuitarStrum(guitarRate);
+            }
+            this.droneGtrHandActive = strumActive && !kill;
+            if (!strumActive) this.droneGtrPrevPinch = 0;
+            else this.droneGtrPrevPinch = p;
+
+            // Pinch directly controls level; distortion chain only used for pinching
+            const pinchEnergy = strumActive ? Math.pow(p, 1.15) : 0;
+            const live = strumActive ? (2.4 + 1.4 * pinchEnergy) : 0; // Louder pinch output
+            const g = kill
+              ? 0
+              : strumActive
+                ? Math.min(3.2, live * (1 - this.idleAmt)) // Louder pinch, still controlled
+                : 0; // No continuous sample through distortion chain
             if (this.droneGtrAGain) {
               try {
                 this.droneGtrAGain.gain.setTargetAtTime(g, t, 0.10);
@@ -2773,27 +3085,20 @@ export class DroneWorkletEngine {
                 this.droneGtrAGain.gain.value = g;
               }
             }
-            if (this.droneGtrASrc) {
-              // Total drone: force sub-low playbackRate (down-pitched Sunn O))) bed).
-              // Right X gives small drift in this low range.
-              const rate = expRange01(control.rightX, 0.12, 0.28);
-              if (Math.abs(rate - this.lastDroneRateA) > 0.004) {
-                this.lastDroneRateA = rate;
-                try {
-                  this.droneGtrASrc.playbackRate.setTargetAtTime(rate, t, 0.10);
-                } catch {
-                  this.droneGtrASrc.playbackRate.value = rate;
-                }
+            if (this.droneGtrALP && this.droneGtrADrive && this.droneGtrAPre && this.droneGtrAHP) {
+              const cleanCut = expRange01(bright, 900, 2200);
+              const dirtyCut = expRange01(bright, 1200, 4200); // Higher LP for drone sustain
+              const pinchHard = strumActive && p > 0.6;
+              const targetLp = !strumActive ? 520 : pinchHard ? dirtyCut : cleanCut;
+              if (Math.abs(targetLp - this.lastGtrLpCut) > 5) {
+                this.lastGtrLpCut = targetLp;
+                this.droneGtrALP.frequency.value = targetLp;
               }
-            }
-            if (this.droneGtrALP && this.droneGtrADrive && this.droneGtrAPre) {
-              // Cab/brightness
-              this.droneGtrALP.frequency.value = expRange01(bright, 900, 2600);
-
-              // Pinch mostly adds gain + more fuzz, not pitch.
-              const fuzzMul = 1 - 0.55 * this.idleAmt;
-              this.droneGtrAPre.curve = makeDriveCurve((0.65 + 0.30 * p) * fuzzMul);
-              this.droneGtrADrive.curve = makeDriveCurve((0.75 + 0.25 * p) * fuzzMul);
+              const hpBase = !strumActive ? 120 : pinchHard ? 25 : 55; // Lower HP for more bass/sub content
+              if (Math.abs(hpBase - this.lastGtrHpCut) > 2) {
+                this.lastGtrHpCut = hpBase;
+                this.droneGtrAHP.frequency.value = hpBase;
+              }
             }
           }
         }
@@ -2803,6 +3108,25 @@ export class DroneWorkletEngine {
       if (this.droneBassGain) this.droneBassGain.gain.value = 0;
       if (this.droneGtrAGain) this.droneGtrAGain.gain.value = 0;
       this.stopDroneStems();
+      // Ensure raw guitar sample is stopped when leaving drone mode
+      if (this.rawGtrStartTimeout !== null) {
+        clearTimeout(this.rawGtrStartTimeout);
+        this.rawGtrStartTimeout = null;
+      }
+      if (this.rawGtrEl) {
+        try {
+          this.rawGtrEl.pause();
+        } catch {}
+        try {
+          this.rawGtrEl.currentTime = 0;
+        } catch {}
+      }
+      if (this.rawGtrGain) {
+        try {
+          this.rawGtrGain.disconnect();
+        } catch {}
+        this.rawGtrGain.gain.value = 0;
+      }
     }
 
     // Mute worklet's own DRONE synthesis when real stems are active.

@@ -24,6 +24,7 @@ export type ControlState = {
   dt: number;
 
   hands?: HandsFrame;
+  rightHandPresent?: boolean;
 
   audioViz?: {
     kick?: Float32Array;
