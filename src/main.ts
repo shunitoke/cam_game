@@ -235,6 +235,9 @@ async function main() {
   video.muted = true;
   videoWrap.appendChild(video);
   document.body.appendChild(videoWrap);
+  const videoWrapStyle = window.getComputedStyle(videoWrap);
+  const videoWrapBaseOpacity = videoWrapStyle.opacity || "1";
+  const videoWrapBasePointerEvents = videoWrapStyle.pointerEvents || "auto";
 
   const midiOverlay = el("div", "midiOverlay");
   midiOverlay.style.display = "none";
@@ -1765,6 +1768,8 @@ async function main() {
     ui.style.display = hidden ? "none" : "block";
     midiOverlay.style.display = hidden ? "none" : (midiOverlayWasOn ? "block" : "none");
     hud.style.display = hidden ? "none" : (hudOn ? "block" : "none");
+    videoWrap.style.opacity = hidden ? "0" : videoWrapBaseOpacity;
+    videoWrap.style.pointerEvents = hidden ? "none" : videoWrapBasePointerEvents;
   };
 
   hideUiBtn.addEventListener("click", () => {
