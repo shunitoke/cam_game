@@ -1094,7 +1094,9 @@ async function main() {
       handsSpan.textContent = String(hands.count);
 
       {
-        if (!camOn || !camTrackOn) {
+        if (uiHidden) {
+          handsPrompt.style.display = "none";
+        } else if (!camOn || !camTrackOn) {
           handsPrompt.textContent = "Use mouse or connect camera";
           handsPrompt.style.display = "block";
         } else {
