@@ -109,7 +109,7 @@ export class AsciiScene {
   private atlasCols = 16;
   private atlasRows = 16;
 
-  private noSignalTexture: THREE.Texture | null = null;
+  private noSignalTexture: any = null;
   private noSignalAspect = 1;
 
   private baseW = 4.2;
@@ -421,7 +421,7 @@ export class AsciiScene {
       this.mat.uniforms.uHasVideo.value = 0.0;
     }
 
-    const pointer = this.mat.uniforms.uPointer?.value as THREE.Vector3 | undefined;
+    const pointer = this.mat.uniforms.uPointer?.value as any;
     if (pointer) {
       pointer.x = clamp01(control.rightX);
       pointer.y = clamp01(1 - control.rightY);
