@@ -149,6 +149,7 @@ async function main() {
 
   const mergeHandsWithMouse = (frame: HandsFrame): HandsFrame => {
     if (!mouseHandState.active) return frame;
+    if (audioMode === "drone" && !mouseHandState.pinching) return frame;
     const hasRealRight = frame.hands.some((h) => h.label === "Right");
     if (hasRealRight) return frame;
     const mouseHand: HandPose = {
